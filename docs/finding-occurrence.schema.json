@@ -1,0 +1,539 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ui-quality.local/schemas/finding-occurrence.schema.json",
+  "title": "UI Quality Workbench FindingOccurrence",
+  "description": "One observation of a stable Finding in a specific AuditRun.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "findingId",
+    "observedFingerprint",
+    "fingerprintVersion",
+    "associationMethod",
+    "associationConfidence",
+    "projectId",
+    "auditRunId",
+    "moduleId",
+    "scenarioId",
+    "sourceCaptureIds",
+    "reviewStatus",
+    "confidence",
+    "evidenceLevel",
+    "methods",
+    "suggestedConclusionType",
+    "suggestedSeverity",
+    "suggestedPriority",
+    "suggestedPrioritySource",
+    "location",
+    "expected",
+    "actual",
+    "evidenceIds",
+    "detectedAt",
+    "updatedAt"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0.0"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "findingId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "observedFingerprint": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Fingerprint calculated for this observation. It may differ from the Finding's current fingerprint after future migrations."
+    },
+    "fingerprintVersion": {
+      "type": "string",
+      "minLength": 1
+    },
+    "associationMethod": {
+      "enum": ["new-finding", "exact-fingerprint", "semantic", "spatial", "human"]
+    },
+    "associationConfidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Confidence that this Occurrence belongs to the selected Finding, separate from detection confidence."
+    },
+    "projectId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "auditRunId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "moduleId": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "ruleRef": {
+      "$ref": "#/$defs/ruleRef"
+    },
+    "scenarioId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sourceCaptureIds": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "reviewStatus": {
+      "enum": ["pending", "confirmed", "dismissed", "ignored"]
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "confidenceRationale": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "evidenceLevel": {
+      "enum": ["measured", "observed", "inferred"],
+      "description": "Human confirmation is represented by reviewStatus and never overwrites evidence provenance."
+    },
+    "methods": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/method"
+      }
+    },
+    "suggestedConclusionType": {
+      "enum": [
+        "verified-defect",
+        "spec-mismatch",
+        "ux-risk",
+        "needs-validation",
+        "suggestion"
+      ]
+    },
+    "suggestedSeverity": {
+      "enum": ["critical", "major", "moderate", "minor", "info"]
+    },
+    "suggestedPriority": {
+      "enum": ["p1", "p2", "p3", "unset"],
+      "description": "V0 engines cannot suggest P0; only a human can set canonical Finding priority to P0."
+    },
+    "suggestedPrioritySource": {
+      "enum": ["unset", "engine", "rule", "ai", "policy"]
+    },
+    "location": {
+      "$ref": "#/$defs/location"
+    },
+    "expected": {
+      "$ref": "#/$defs/comparisonSide"
+    },
+    "actual": {
+      "$ref": "#/$defs/comparisonSide"
+    },
+    "measurements": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/measurement"
+      }
+    },
+    "evidenceIds": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "suggestedRecommendation": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "reviewNote": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "dismissReason": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "ignoreReason": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "reviewedAt": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "reviewedBy": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "detectedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "extensions": {
+      "type": "object",
+      "description": "Namespaced module-specific data that does not change core semantics.",
+      "propertyNames": {
+        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*(?:[.:][a-z0-9]+(?:-[a-z0-9]+)*)+$"
+      },
+      "additionalProperties": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "reviewStatus": { "const": "ignored" }
+        },
+        "required": ["reviewStatus"]
+      },
+      "then": {
+        "required": ["ignoreReason", "reviewedAt"],
+        "properties": {
+          "ignoreReason": { "type": "string", "minLength": 1 },
+          "reviewedAt": { "type": "string", "format": "date-time" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "reviewStatus": { "const": "dismissed" }
+        },
+        "required": ["reviewStatus"]
+      },
+      "then": {
+        "required": ["dismissReason", "reviewedAt"],
+        "properties": {
+          "dismissReason": { "type": "string", "minLength": 1 },
+          "reviewedAt": { "type": "string", "format": "date-time" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "reviewStatus": { "const": "confirmed" }
+        },
+        "required": ["reviewStatus"]
+      },
+      "then": {
+        "required": ["reviewedAt"],
+        "properties": {
+          "reviewedAt": { "type": "string", "format": "date-time" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "reviewStatus": { "const": "pending" }
+        },
+        "required": ["reviewStatus"]
+      },
+      "then": {
+        "properties": {
+          "reviewedAt": { "const": null },
+          "reviewedBy": { "const": null }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "suggestedPriority": { "const": "unset" }
+        },
+        "required": ["suggestedPriority"]
+      },
+      "then": {
+        "properties": {
+          "suggestedPrioritySource": { "const": "unset" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "suggestedPriority": { "not": { "const": "unset" } }
+        },
+        "required": ["suggestedPriority"]
+      },
+      "then": {
+        "properties": {
+          "suggestedPrioritySource": { "not": { "const": "unset" } }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "ruleRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "hash"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hash": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "method": {
+      "anyOf": [
+        {
+          "enum": [
+            "pixel-diff",
+            "image-registration",
+            "figma-export-metadata",
+            "figma-node",
+            "dom-style",
+            "accessibility-tree",
+            "interaction-trace",
+            "heuristic",
+            "ai",
+            "human"
+          ]
+        },
+        {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*(?:[.:][a-z0-9]+(?:-[a-z0-9]+)*)+$"
+        }
+      ]
+    },
+    "location": {
+      "oneOf": [
+        { "$ref": "#/$defs/spatialLocation" },
+        { "$ref": "#/$defs/temporalLocation" },
+        { "$ref": "#/$defs/flowLocation" },
+        { "$ref": "#/$defs/globalLocation" }
+      ]
+    },
+    "spatialLocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "targetCaptureId", "bbox"],
+      "properties": {
+        "kind": {
+          "const": "spatial"
+        },
+        "targetCaptureId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "targetElementRef": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "description": "A DOM, component, Figma node, or human-readable element reference when available."
+        },
+        "bbox": {
+          "$ref": "#/$defs/bbox"
+        },
+        "normalizedBbox": {
+          "$ref": "#/$defs/normalizedBbox"
+        }
+      }
+    },
+    "temporalLocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "artifactId", "startMs", "endMs"],
+      "properties": {
+        "kind": {
+          "const": "temporal"
+        },
+        "artifactId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "startMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "endMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "stepId": {
+          "type": ["string", "null"],
+          "minLength": 1
+        }
+      }
+    },
+    "flowLocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "const": "flow"
+        },
+        "stepId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "transitionId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "anyOf": [
+        { "required": ["stepId"] },
+        { "required": ["transitionId"] }
+      ]
+    },
+    "globalLocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "scope"],
+      "properties": {
+        "kind": {
+          "const": "global"
+        },
+        "scope": {
+          "enum": ["project", "page", "component", "scenario"]
+        },
+        "scopeRef": {
+          "type": ["string", "null"],
+          "minLength": 1
+        }
+      }
+    },
+    "bbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "width", "height", "imageWidth", "imageHeight", "unit"],
+      "properties": {
+        "x": {
+          "type": "number",
+          "minimum": 0
+        },
+        "y": {
+          "type": "number",
+          "minimum": 0
+        },
+        "width": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "height": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "imageWidth": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "imageHeight": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "unit": {
+          "const": "px"
+        }
+      }
+    },
+    "normalizedBbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "y": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "width": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        },
+        "height": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "comparisonSide": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description"],
+      "properties": {
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "captureId": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "nodeOrElementRef": {
+          "type": ["string", "null"],
+          "minLength": 1
+        }
+      }
+    },
+    "measurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metric", "expected", "actual", "unit", "evidenceLevel"],
+      "properties": {
+        "metric": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected": {
+          "$ref": "#/$defs/measurementValue"
+        },
+        "actual": {
+          "$ref": "#/$defs/measurementValue"
+        },
+        "delta": {
+          "$ref": "#/$defs/measurementValue"
+        },
+        "unit": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "evidenceLevel": {
+          "enum": ["measured", "observed", "inferred"]
+        }
+      }
+    },
+    "measurementValue": {
+      "type": ["number", "string", "boolean", "null"]
+    }
+  }
+}

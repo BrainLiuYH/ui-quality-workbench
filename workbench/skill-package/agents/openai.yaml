@@ -1,0 +1,7 @@
+interface:
+  display_name: "UI 质量工作台"
+  short_description: "本地对比设计稿与实现图，审阅并导出 UI 差异候选"
+  brand_color: "#1677FF"
+  default_prompt: "使用 $ui-quality-workbench 启动本地 UI 质量工作台，导入设计稿和实现页面，并生成待人工确认的走查候选清单。"
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,48 @@
+# Dependencies and generated builds
+node_modules/
+dist/
+coverage/
+.coverage
+.nyc_output/
+
+# Local environments and secrets
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+env/
+
+# Logs and caches
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.pnpm-store/
+.vite/
+.vite-temp/
+
+# OS and editor metadata
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local Codex skill installation and packaged archives
+.agents/
+*.skill.zip
+
+# QA captures and design-process screenshots
+design-previews/
+workbench/qa/
+workbench/*.png
+
+# npm's secondary lockfile is not part of this pnpm project
+package-lock.json

@@ -1,0 +1,87 @@
+{
+  "schemaVersion": "1.0.0",
+  "id": "occ_20260826_001_spacing_01",
+  "findingId": "fnd_checkout_primary_button_spacing",
+  "observedFingerprint": "visual-fidelity|visual.spacing|scn_checkout_default|checkout.primary-button",
+  "fingerprintVersion": "1",
+  "associationMethod": "new-finding",
+  "associationConfidence": 1,
+  "projectId": "prj_local_default",
+  "auditRunId": "run_20260826_001",
+  "moduleId": "visual-fidelity",
+  "ruleRef": {
+    "id": "visual.spacing",
+    "version": "1.0.0",
+    "hash": "sha256:example-visual-spacing-rule"
+  },
+  "scenarioId": "scn_checkout_default",
+  "sourceCaptureIds": [
+    "cap_design_checkout_default",
+    "cap_implementation_checkout_default"
+  ],
+  "reviewStatus": "confirmed",
+  "confidence": 0.94,
+  "confidenceRationale": "两图已完成配准，按钮轮廓清晰，连续边缘偏移为 8 px。",
+  "evidenceLevel": "measured",
+  "methods": [
+    "pixel-diff",
+    "image-registration"
+  ],
+  "suggestedConclusionType": "spec-mismatch",
+  "suggestedSeverity": "moderate",
+  "suggestedPriority": "unset",
+  "suggestedPrioritySource": "unset",
+  "location": {
+    "kind": "spatial",
+    "targetCaptureId": "cap_implementation_checkout_default",
+    "targetElementRef": "提交订单按钮",
+    "bbox": {
+      "x": 984,
+      "y": 712,
+      "width": 296,
+      "height": 48,
+      "imageWidth": 1440,
+      "imageHeight": 900,
+      "unit": "px"
+    },
+    "normalizedBbox": {
+      "x": 0.683333,
+      "y": 0.791111,
+      "width": 0.205556,
+      "height": 0.053333
+    }
+  },
+  "expected": {
+    "description": "按钮左边缘位于 x=976 px。",
+    "captureId": "cap_design_checkout_default",
+    "nodeOrElementRef": null
+  },
+  "actual": {
+    "description": "按钮左边缘位于 x=984 px。",
+    "captureId": "cap_implementation_checkout_default",
+    "nodeOrElementRef": null
+  },
+  "measurements": [
+    {
+      "metric": "left-edge-x",
+      "expected": 976,
+      "actual": 984,
+      "delta": 8,
+      "unit": "px",
+      "evidenceLevel": "measured"
+    }
+  ],
+  "evidenceIds": [
+    "ev_design_crop_spacing_01",
+    "ev_implementation_crop_spacing_01",
+    "ev_diff_overlay_spacing_01"
+  ],
+  "suggestedRecommendation": "将按钮容器向左调整 8 px。",
+  "reviewNote": "设计师已确认该偏移不是有意修改。",
+  "dismissReason": null,
+  "ignoreReason": null,
+  "reviewedAt": "2026-08-26T10:08:00+08:00",
+  "reviewedBy": "local-user",
+  "detectedAt": "2026-08-26T10:03:00+08:00",
+  "updatedAt": "2026-08-26T10:08:00+08:00"
+}

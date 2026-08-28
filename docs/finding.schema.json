@@ -1,0 +1,336 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ui-quality.local/schemas/finding.schema.json",
+  "title": "UI Quality Workbench Finding",
+  "description": "An issue identity separated from run-specific evidence. V0 uses one Finding per Occurrence; later versions may associate it across runs.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "fingerprintCandidate",
+    "fingerprintVersion",
+    "identityComponents",
+    "projectId",
+    "moduleId",
+    "category",
+    "conclusionType",
+    "subject",
+    "title",
+    "summary",
+    "severity",
+    "severitySource",
+    "priority",
+    "prioritySource",
+    "resolutionStatus",
+    "verificationStatus",
+    "revision",
+    "firstSeenRunId",
+    "lastSeenRunId",
+    "createdAt",
+    "updatedAt"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0.0"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "fingerprintCandidate": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Current fingerprint candidate. V0 stores it but does not automatically match Findings across runs."
+    },
+    "fingerprintVersion": {
+      "type": "string",
+      "minLength": 1
+    },
+    "identityComponents": {
+      "$ref": "#/$defs/identityComponents"
+    },
+    "legacyFingerprints": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "projectId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "moduleId": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "ruleId": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "category": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*(?:\\.[a-z][a-z0-9-]*)+$",
+      "examples": [
+        "visual.color",
+        "visual.spacing",
+        "interaction.error-recovery",
+        "accessibility.contrast"
+      ]
+    },
+    "conclusionType": {
+      "enum": [
+        "verified-defect",
+        "spec-mismatch",
+        "ux-risk",
+        "needs-validation",
+        "suggestion"
+      ]
+    },
+    "subject": {
+      "$ref": "#/$defs/subject"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "severity": {
+      "enum": ["critical", "major", "moderate", "minor", "info"]
+    },
+    "severitySource": {
+      "enum": ["engine", "rule", "ai-suggested", "human"]
+    },
+    "priority": {
+      "enum": ["p0", "p1", "p2", "p3", "unset"]
+    },
+    "prioritySource": {
+      "enum": ["unset", "ai-suggested", "human", "policy"]
+    },
+    "resolutionStatus": {
+      "enum": ["not-applicable", "open", "fixed", "wont-fix", "reopened"],
+      "description": "V0 keeps this at not-applicable. Later versions add repair workflows."
+    },
+    "verificationStatus": {
+      "enum": ["not-requested", "pending", "passed", "failed"],
+      "description": "V0 keeps this at not-requested."
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Monotonic revision used by immutable exports and decision history."
+    },
+    "firstSeenRunId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "lastSeenRunId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "latestOccurrenceId": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "description": "Optional to avoid a circular insert dependency when creating the first Finding and Occurrence."
+    },
+    "lastEvaluatedRunId": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "lastVerifiedRunId": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "recommendation": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "acceptanceCriteria": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "reviewNote": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "relatedFindingIds": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "extensions": {
+      "type": "object",
+      "description": "Namespaced module-specific data that does not change core semantics.",
+      "propertyNames": {
+        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*(?:[.:][a-z0-9]+(?:-[a-z0-9]+)*)+$"
+      },
+      "additionalProperties": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "priority": { "const": "unset" }
+        },
+        "required": ["priority"]
+      },
+      "then": {
+        "properties": {
+          "prioritySource": { "const": "unset" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "priority": { "not": { "const": "unset" } }
+        },
+        "required": ["priority"]
+      },
+      "then": {
+        "properties": {
+          "prioritySource": { "not": { "const": "unset" } }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "verificationStatus": { "const": "passed" }
+        },
+        "required": ["verificationStatus"]
+      },
+      "then": {
+        "properties": {
+          "resolutionStatus": { "const": "fixed" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "priority": { "const": "p0" }
+        },
+        "required": ["priority"]
+      },
+      "then": {
+        "properties": {
+          "prioritySource": { "const": "human" }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "identityComponents": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "moduleId",
+        "ruleOrCategoryKey",
+        "scenarioId",
+        "anchorType",
+        "subjectKey"
+      ],
+      "properties": {
+        "moduleId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ruleOrCategoryKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scenarioId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "anchorType": {
+          "enum": ["global", "region", "element", "flow"]
+        },
+        "subjectKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "variantId": {
+          "type": ["string", "null"],
+          "minLength": 1
+        }
+      }
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scenarioId", "anchorType", "key"],
+      "properties": {
+        "scenarioId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "anchorType": {
+          "enum": ["global", "region", "element", "flow"]
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "description": "A stable semantic key, component or element identity, or normalized spatial bucket."
+        },
+        "label": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "componentRef": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "normalizedRegion": {
+          "$ref": "#/$defs/normalizedRegion"
+        }
+      }
+    },
+    "normalizedRegion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "y": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "width": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        },
+        "height": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        }
+      }
+    }
+  }
+}
