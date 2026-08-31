@@ -114,8 +114,4 @@ pnpm run test
 
 更完整的运行边界见 [V0 能力说明](workbench/skill-package/references/v0-boundaries.md)，候选复核与优先级规则见 [审查决策模型](workbench/skill-package/references/audit-model.md)。
 
-## 第三方代码与授权
 
-对比引擎改编自 [SemineChen/yangao](https://github.com/SemineChen/yangao) 的固定提交 `beac836ba3c81b9a1d40bac8fe75af08444ab742`。该上游提交没有公开许可证；本项目依据维护者向本项目报告的、来自原作者的复制、修改和再分发授权使用相关代码。访问本仓库不应被理解为上游项目已向公众授予通用许可，原始代码的著作权仍归其作者所有。
-
-完整声明及 React、React DOM、Scheduler、Phosphor Icons 和 Vite 的许可信息见 [THIRD_PARTY_NOTICES.md](workbench/skill-package/THIRD_PARTY_NOTICES.md)。本仓库当前不提供项目级开源许可证；除第三方组件各自许可证明确授予的权利外，不应把访问该私有仓库理解为获得了公众重用或转授权。本仓库转为公开、扩大分发范围或变更许可前，应再次核验授权适用范围。
