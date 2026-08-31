@@ -1,8 +1,10 @@
 // Input comparability is intentionally evaluated before issue classification.
 // A pixel difference is evidence that two rasters differ; it is not, by itself,
 // evidence that either implementation is wrong. This module combines alpha
-// coverage, low-frequency colour blocks, and edge structure so a local photo or
-// video change does not automatically make an otherwise comparable page "low".
+// coverage, low-frequency colour blocks, fine edge differences, and coarse
+// directional edge profiles. Only the coarse profile is allowed to prove a
+// blocking layout mismatch, so changed copy, fake data, photos, or video do not
+// automatically make an otherwise comparable page "low".
 
 const ALPHA_VISIBLE = 16
 const STRONG_PIXEL_DELTA = 52
@@ -21,6 +23,12 @@ const THRESHOLDS = Object.freeze({
   widespreadCellCoverage: 0.42,
   widespreadAxisCoverage: 0.62,
   globalStrongPixelCoverage: 0.25,
+  layoutEdgeSupport: 0.04,
+  layoutDensityDelta: 0.065,
+  layoutOrientationDelta: 0.35,
+  widespreadLayoutCellCoverage: 0.28,
+  coarseLayoutSimilarity: 0.6,
+  coarseBoundaryEnergy: 4,
 })
 
 function clamp(value, minimum, maximum) {
@@ -89,6 +97,10 @@ function createCell() {
     edgeSamples: 0,
     edgeDeltaSum: 0,
     edgePresenceMismatch: 0,
+    designEdgeXPresence: 0,
+    designEdgeYPresence: 0,
+    implementationEdgeXPresence: 0,
+    implementationEdgeYPresence: 0,
   }
 }
 
@@ -103,12 +115,82 @@ function addOpaqueColour(cell, design, implementation, index) {
   cell.implementationBlue += compositeChannel(implementation[index + 2], implementationAlpha)
 }
 
-function edgeMagnitude(data, index, rightIndex, downIndex) {
+function edgeComponents(data, index, rightIndex, downIndex) {
   const center = luminance(data, index)
-  return Math.max(
-    Math.abs(center - luminance(data, rightIndex)),
-    Math.abs(center - luminance(data, downIndex)),
-  )
+  const x = Math.abs(center - luminance(data, rightIndex))
+  const y = Math.abs(center - luminance(data, downIndex))
+  return { x, y, magnitude: Math.max(x, y) }
+}
+
+function edgeOrientationBalance(xPresence, yPresence) {
+  return (xPresence - yPresence) / Math.max(1, xPresence + yPresence)
+}
+
+function cellMeanLuminance(cell, side) {
+  const red = cell[`${side}Red`] / Math.max(1, cell.overlap)
+  const green = cell[`${side}Green`] / Math.max(1, cell.overlap)
+  const blue = cell[`${side}Blue`] / Math.max(1, cell.overlap)
+  return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+}
+
+function compareCoarseLayout(cells, columns, rows) {
+  const designBoundaries = []
+  const implementationBoundaries = []
+
+  const addBoundary = (first, second) => {
+    const firstOverlap = first.overlap / Math.max(1, first.samples)
+    const secondOverlap = second.overlap / Math.max(1, second.samples)
+    if (firstOverlap < 0.5 || secondOverlap < 0.5) return
+    designBoundaries.push(Math.abs(
+      cellMeanLuminance(first, 'design') - cellMeanLuminance(second, 'design'),
+    ))
+    implementationBoundaries.push(Math.abs(
+      cellMeanLuminance(first, 'implementation') -
+      cellMeanLuminance(second, 'implementation'),
+    ))
+  }
+
+  for (let row = 0; row < rows; row++) {
+    for (let column = 0; column < columns; column++) {
+      const index = row * columns + column
+      if (column + 1 < columns) addBoundary(cells[index], cells[index + 1])
+      if (row + 1 < rows) addBoundary(cells[index], cells[index + columns])
+    }
+  }
+
+  let dotProduct = 0
+  let designSquared = 0
+  let implementationSquared = 0
+  for (let index = 0; index < designBoundaries.length; index++) {
+    const design = designBoundaries[index]
+    const implementation = implementationBoundaries[index]
+    dotProduct += design * implementation
+    designSquared += design * design
+    implementationSquared += implementation * implementation
+  }
+
+  const pairs = designBoundaries.length
+  const designNorm = Math.sqrt(designSquared)
+  const implementationNorm = Math.sqrt(implementationSquared)
+  const designEnergy = designNorm / Math.sqrt(Math.max(1, pairs))
+  const implementationEnergy = implementationNorm / Math.sqrt(Math.max(1, pairs))
+  const designHasStructure = designEnergy >= THRESHOLDS.coarseBoundaryEnergy
+  const implementationHasStructure = implementationEnergy >=
+    THRESHOLDS.coarseBoundaryEnergy
+
+  let similarity = null
+  if (designHasStructure || implementationHasStructure) {
+    similarity = designHasStructure && implementationHasStructure
+      ? clamp(dotProduct / Math.max(1e-9, designNorm * implementationNorm), 0, 1)
+      : 0
+  }
+
+  return {
+    similarity,
+    pairs,
+    designEnergy,
+    implementationEnergy,
+  }
 }
 
 function spreadForMask(mask, columns, rows) {
@@ -218,6 +300,12 @@ export function assessComparability({
     0,
     Math.max(0, rasterHeight - 1),
   )
+  const ignoredTopStart = clamp(
+    Math.round((Number(profile?.ignoreTopStart) || 0) * rasterHeight / profileHeight),
+    0,
+    Math.max(0, rasterHeight - ignoredTop),
+  )
+  const ignoredTopEnd = ignoredTopStart + ignoredTop
   const analysisHeight = rasterHeight - ignoredTop
   const columns = Math.max(1, Math.min(12, rasterWidth))
   const rows = Math.max(
@@ -249,8 +337,10 @@ export function assessComparability({
   let deltaSum = 0
   let strongPixels = 0
 
-  for (let y = ignoredTop; y < rasterHeight; y += stride) {
-    const row = Math.min(rows - 1, Math.floor((y - ignoredTop) * rows / analysisHeight))
+  for (let y = 0; y < rasterHeight; y += stride) {
+    if (y >= ignoredTopStart && y < ignoredTopEnd) continue
+    const compactY = y < ignoredTopStart ? y : y - ignoredTop
+    const row = Math.min(rows - 1, Math.floor(compactY * rows / analysisHeight))
     for (let x = 0; x < rasterWidth; x += stride) {
       const column = Math.min(columns - 1, Math.floor(x * columns / rasterWidth))
       const cell = cells[row * columns + column]
@@ -306,16 +396,27 @@ export function assessComparability({
       ].every((alpha) => alpha >= ALPHA_VISIBLE)
       if (!neighboursVisible) continue
 
-      const designEdge = edgeMagnitude(designPixels, index, rightIndex, downIndex)
-      const implementationEdge = edgeMagnitude(
+      const designEdge = edgeComponents(designPixels, index, rightIndex, downIndex)
+      const implementationEdge = edgeComponents(
         implementationPixels,
         index,
         rightIndex,
         downIndex,
       )
       cell.edgeSamples++
-      cell.edgeDeltaSum += Math.abs(designEdge - implementationEdge) / 255
-      if ((designEdge >= EDGE_THRESHOLD) !== (implementationEdge >= EDGE_THRESHOLD)) {
+      cell.edgeDeltaSum += Math.abs(
+        designEdge.magnitude - implementationEdge.magnitude,
+      ) / 255
+      cell.designEdgeXPresence += Number(designEdge.x >= EDGE_THRESHOLD)
+      cell.designEdgeYPresence += Number(designEdge.y >= EDGE_THRESHOLD)
+      cell.implementationEdgeXPresence += Number(
+        implementationEdge.x >= EDGE_THRESHOLD,
+      )
+      cell.implementationEdgeYPresence += Number(
+        implementationEdge.y >= EDGE_THRESHOLD,
+      )
+      if ((designEdge.magnitude >= EDGE_THRESHOLD) !==
+        (implementationEdge.magnitude >= EDGE_THRESHOLD)) {
         cell.edgePresenceMismatch++
       }
     }
@@ -323,10 +424,13 @@ export function assessComparability({
 
   const changedMask = new Uint8Array(cells.length)
   const structureMask = new Uint8Array(cells.length)
+  const layoutStructureMask = new Uint8Array(cells.length)
   let lowFrequencyCells = 0
   let totalEdgeSamples = 0
   let totalEdgeDelta = 0
   let totalEdgePresenceMismatch = 0
+  let totalLayoutDensityDelta = 0
+  let totalLayoutOrientationDelta = 0
 
   for (let index = 0; index < cells.length; index++) {
     const cell = cells[index]
@@ -338,6 +442,29 @@ export function assessComparability({
     const strongRatio = cell.strong / Math.max(1, cell.overlap)
     const edgeDelta = cell.edgeDeltaSum / Math.max(1, cell.edgeSamples)
     const edgePresenceMismatch = cell.edgePresenceMismatch / Math.max(1, cell.edgeSamples)
+    const designEdgeXDensity = cell.designEdgeXPresence / Math.max(1, cell.edgeSamples)
+    const designEdgeYDensity = cell.designEdgeYPresence / Math.max(1, cell.edgeSamples)
+    const implementationEdgeXDensity = cell.implementationEdgeXPresence /
+      Math.max(1, cell.edgeSamples)
+    const implementationEdgeYDensity = cell.implementationEdgeYPresence /
+      Math.max(1, cell.edgeSamples)
+    const layoutDensityDelta = (
+      Math.abs(designEdgeXDensity - implementationEdgeXDensity) +
+      Math.abs(designEdgeYDensity - implementationEdgeYDensity)
+    ) / 2
+    const layoutEdgeSupport = Math.max(
+      (designEdgeXDensity + designEdgeYDensity) / 2,
+      (implementationEdgeXDensity + implementationEdgeYDensity) / 2,
+    )
+    const layoutOrientationDelta = Math.abs(
+      edgeOrientationBalance(cell.designEdgeXPresence, cell.designEdgeYPresence) -
+      edgeOrientationBalance(
+        cell.implementationEdgeXPresence,
+        cell.implementationEdgeYPresence,
+      ),
+    ) / 2
+    totalLayoutDensityDelta += layoutDensityDelta
+    totalLayoutOrientationDelta += layoutOrientationDelta
     const lowFrequencyDelta = cell.overlap
       ? (
         Math.abs(cell.designRed - cell.implementationRed) +
@@ -353,6 +480,13 @@ export function assessComparability({
       edgeDelta >= 0.06 || edgePresenceMismatch >= THRESHOLDS.structureCell
     ) &&
       (strongRatio >= 0.12 || lowFrequencyDelta >= 10)
+    const layoutStructureChanged = structureChanged && (
+      layoutDensityDelta >= THRESHOLDS.layoutDensityDelta ||
+      (
+        layoutEdgeSupport >= THRESHOLDS.layoutEdgeSupport &&
+        layoutOrientationDelta >= THRESHOLDS.layoutOrientationDelta
+      )
+    )
 
     if (lowFrequencyChanged) lowFrequencyCells++
     if (missingRatio >= 0.25 ||
@@ -360,38 +494,51 @@ export function assessComparability({
       changedMask[index] = 1
     }
     if (structureChanged) structureMask[index] = 1
+    if (layoutStructureChanged) layoutStructureMask[index] = 1
   }
 
   const changedSpread = spreadForMask(changedMask, columns, rows)
   const structureSpread = spreadForMask(structureMask, columns, rows)
+  const layoutStructureSpread = spreadForMask(layoutStructureMask, columns, rows)
+  const coarseLayout = compareCoarseLayout(cells, columns, rows)
   const validCellCount = Math.max(1, cells.filter((cell) => cell.union > 0).length)
   const changedCellRatio = changedSpread.cells / validCellCount
   const structureChangedCellRatio = structureSpread.cells / validCellCount
+  const layoutStructureChangedCellRatio = layoutStructureSpread.cells / validCellCount
   const largest = largestComponent(changedMask, columns, rows)
   const strongPixelRatio = strongPixels / Math.max(1, overlapPixels)
   const oneSidedTransparentRatio = oneSidedPixels / Math.max(1, unionPixels)
   const meanColourDelta = deltaSum / Math.max(1, overlapPixels)
 
-  let unmatchedBottomRows = 0
-  let bottomDesignOnly = 0
-  let bottomImplementationOnly = 0
-  for (let row = rows - 1; row >= 0; row--) {
+  const bottomAligned = profile?.alignment === 'bottom-left' ||
+    profile?.verticalAlignment === 'bottom'
+  let unmatchedEdgeRows = 0
+  let edgeDesignOnly = 0
+  let edgeImplementationOnly = 0
+  const edgeStart = bottomAligned ? 0 : rows - 1
+  const edgeEnd = bottomAligned ? rows : -1
+  const edgeStep = bottomAligned ? 1 : -1
+  for (let row = edgeStart; row !== edgeEnd; row += edgeStep) {
     const total = rowTotals[row]
     if (!total.union || total.oneSided / total.union < 0.72) break
-    unmatchedBottomRows++
-    bottomDesignOnly += total.designOnly
-    bottomImplementationOnly += total.implementationOnly
+    unmatchedEdgeRows++
+    edgeDesignOnly += total.designOnly
+    edgeImplementationOnly += total.implementationOnly
   }
-  const unmatchedBottomRatio = unmatchedBottomRows / rows
-  const bottomMissingSide = unmatchedBottomRows === 0
+  const unmatchedEdgeRatio = unmatchedEdgeRows / rows
+  const edgeMissingSide = unmatchedEdgeRows === 0
     ? null
-    : bottomDesignOnly > bottomImplementationOnly
+    : edgeDesignOnly > edgeImplementationOnly
       ? 'implementation'
-      : bottomImplementationOnly > bottomDesignOnly
+      : edgeImplementationOnly > edgeDesignOnly
         ? 'design'
         : 'mixed'
-  const bottomExplainsMissing = (bottomDesignOnly + bottomImplementationOnly) /
+  const edgeExplainsMissing = (edgeDesignOnly + edgeImplementationOnly) /
     Math.max(1, oneSidedPixels)
+  const unmatchedTopRatio = bottomAligned ? unmatchedEdgeRatio : 0
+  const unmatchedBottomRatio = bottomAligned ? 0 : unmatchedEdgeRatio
+  const topMissingSide = bottomAligned ? edgeMissingSide : null
+  const bottomMissingSide = bottomAligned ? null : edgeMissingSide
   const changedCellCoverage = changedSpread.cells / Math.max(1, columns * rows)
   const spatialSupport = changedCellRatio * Math.min(
     changedSpread.rowRatio,
@@ -401,6 +548,10 @@ export function assessComparability({
     structureSpread.rowRatio,
     structureSpread.columnRatio,
   )
+  const layoutStructureSupport = layoutStructureChangedCellRatio * Math.min(
+    layoutStructureSpread.rowRatio,
+    layoutStructureSpread.columnRatio,
+  )
   const localizedChange = changedCellRatio >= THRESHOLDS.localizedCellCoverage &&
     changedCellRatio < 0.62 &&
     (changedSpread.rowRatio < 0.55 || changedSpread.columnRatio < 0.55) &&
@@ -408,25 +559,39 @@ export function assessComparability({
   const widespreadVisual = changedCellRatio >= THRESHOLDS.widespreadCellCoverage &&
     changedSpread.rowRatio >= THRESHOLDS.widespreadAxisCoverage &&
     changedSpread.columnRatio >= THRESHOLDS.widespreadAxisCoverage
-  const widespreadStructure = structureChangedCellRatio >= 0.28 &&
+  const widespreadFineStructure = structureChangedCellRatio >= 0.28 &&
     structureSpread.rowRatio >= THRESHOLDS.widespreadAxisCoverage &&
     structureSpread.columnRatio >= THRESHOLDS.widespreadAxisCoverage
+  const widespreadLayoutStructure = layoutStructureChangedCellRatio >=
+    THRESHOLDS.widespreadLayoutCellCoverage &&
+    layoutStructureSpread.rowRatio >= THRESHOLDS.widespreadAxisCoverage &&
+    layoutStructureSpread.columnRatio >= THRESHOLDS.widespreadAxisCoverage
+  const confirmedLayoutMismatch = widespreadLayoutStructure &&
+    coarseLayout.similarity !== null &&
+    coarseLayout.similarity < THRESHOLDS.coarseLayoutSimilarity
   const globalStrongDifference = strongPixelRatio >= THRESHOLDS.globalStrongPixelCoverage &&
     changedSpread.rowRatio >= 0.55 && changedSpread.columnRatio >= 0.55
+  const widespreadContentVariation = widespreadVisual &&
+    !confirmedLayoutMismatch &&
+    (
+      widespreadFineStructure || widespreadLayoutStructure || globalStrongDifference ||
+      lowFrequencyCells / validCellCount >= 0.4
+    )
 
   let score = 100
   score -= Math.min(32, oneSidedTransparentRatio * 70)
   score -= Math.min(24, strongPixelRatio * 26)
   score -= Math.min(18, changedCellRatio * 18)
   score -= Math.min(28, spatialSupport * 42)
-  score -= Math.min(18, structureSupport * 30)
+  score -= Math.min(12, structureSupport * 20)
+  score -= Math.min(18, layoutStructureSupport * 30)
 
   const reasons = []
-  if (unmatchedBottomRatio >= THRESHOLDS.transparentBottom && bottomExplainsMissing >= 0.55) {
+  if (unmatchedEdgeRatio >= THRESHOLDS.transparentBottom && edgeExplainsMissing >= 0.55) {
     reasons.push(reason(
-      'TRANSPARENT_BOTTOM_MISMATCH',
+      bottomAligned ? 'TRANSPARENT_TOP_MISMATCH' : 'TRANSPARENT_BOTTOM_MISMATCH',
       'warning',
-      `一侧截图底部约 ${Math.round(unmatchedBottomRatio * 100)}% 没有对应像素，应先确认页面高度或滚动范围。`,
+      `一侧截图${bottomAligned ? '顶部' : '底部'}约 ${Math.round(unmatchedEdgeRatio * 100)}% 没有对应像素，应先确认页面高度或滚动范围。`,
     ))
   } else if (oneSidedTransparentRatio >= THRESHOLDS.transparentRegion) {
     reasons.push(reason(
@@ -436,19 +601,17 @@ export function assessComparability({
     ))
   }
 
-  if (globalStrongDifference) {
-    reasons.push(reason(
-      'GLOBAL_STRONG_DIFFERENCE',
-      widespreadVisual ? 'blocking' : 'warning',
-      `强像素差异覆盖约 ${Math.round(strongPixelRatio * 100)}%，且分布在页面多个区域。`,
-    ))
-  }
-
-  if (widespreadStructure) {
+  if (confirmedLayoutMismatch) {
     reasons.push(reason(
       'WIDESPREAD_STRUCTURE_DIFFERENCE',
       'blocking',
-      '粗粒度边缘结构在页面横向和纵向均出现广泛变化，可能不是同一界面状态。',
+      '粗粒度布局边缘的密度或方向在页面横向和纵向均广泛变化，可能不是同一界面结构。',
+    ))
+  } else if (widespreadContentVariation) {
+    reasons.push(reason(
+      'WIDESPREAD_CONTENT_VARIATION',
+      'warning',
+      '页面主要布局仍可对应，但文案、图片或业务数据在多个区域不同；可以继续走查，内容相关候选需人工复核。',
     ))
   } else if (localizedChange) {
     reasons.push(reason(
@@ -458,15 +621,23 @@ export function assessComparability({
     ))
   }
 
-  const lowComparability = widespreadVisual &&
-    (widespreadStructure || globalStrongDifference || lowFrequencyCells / validCellCount >= 0.4)
+  if (globalStrongDifference) {
+    reasons.push(reason(
+      'GLOBAL_STRONG_DIFFERENCE',
+      'warning',
+      `强像素差异覆盖约 ${Math.round(strongPixelRatio * 100)}%，且分布在页面多个区域。`,
+    ))
+  }
+
+  const lowComparability = widespreadVisual && confirmedLayoutMismatch
   const meaningfulMismatch = oneSidedTransparentRatio >= THRESHOLDS.transparentRegion ||
-    localizedChange || globalStrongDifference || changedCellRatio >= 0.16
+    localizedChange || widespreadContentVariation || globalStrongDifference ||
+    changedCellRatio >= 0.16
 
   if (lowComparability) {
     score = Math.min(score, 44)
   } else if (meaningfulMismatch) {
-    score = Math.min(score, 79)
+    score = Math.max(50, Math.min(score, 79))
   } else {
     score = Math.max(score, 80)
   }
@@ -492,6 +663,7 @@ export function assessComparability({
       sampledPixels,
       sampleStride: stride,
       ignoredTop,
+      ignoredTopStart,
       gridColumns: columns,
       gridRows: rows,
       opaqueOverlapRatio: round(overlapPixels / Math.max(1, unionPixels)),
@@ -502,6 +674,8 @@ export function assessComparability({
       ),
       unmatchedBottomRatio: round(unmatchedBottomRatio),
       bottomMissingSide,
+      unmatchedTopRatio: round(unmatchedTopRatio),
+      topMissingSide,
       meanColourDelta: round(meanColourDelta, 1),
       strongPixelRatio: round(strongPixelRatio),
       meanEdgeMagnitudeDelta: round(totalEdgeDelta / Math.max(1, totalEdgeSamples)),
@@ -518,6 +692,22 @@ export function assessComparability({
       structureChangedCellRatio: round(structureChangedCellRatio),
       structureChangedRowRatio: round(structureSpread.rowRatio),
       structureChangedColumnRatio: round(structureSpread.columnRatio),
+      layoutStructureChangedCellRatio: round(layoutStructureChangedCellRatio),
+      layoutStructureChangedRowRatio: round(layoutStructureSpread.rowRatio),
+      layoutStructureChangedColumnRatio: round(layoutStructureSpread.columnRatio),
+      meanLayoutEdgeDensityDelta: round(totalLayoutDensityDelta / validCellCount),
+      meanLayoutEdgeOrientationDelta: round(
+        totalLayoutOrientationDelta / validCellCount,
+      ),
+      coarseLayoutSimilarity: coarseLayout.similarity === null
+        ? null
+        : round(coarseLayout.similarity),
+      coarseLayoutBoundaryPairs: coarseLayout.pairs,
+      designCoarseBoundaryEnergy: round(coarseLayout.designEnergy, 1),
+      implementationCoarseBoundaryEnergy: round(
+        coarseLayout.implementationEnergy,
+        1,
+      ),
     },
   }
 }

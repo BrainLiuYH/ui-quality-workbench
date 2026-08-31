@@ -59,6 +59,22 @@ test('dense image-like regions use the neutral content class', async () => {
   assert.ok(result.issues.length > 0)
   assert.deepEqual([...new Set(result.issues.map((issue) => issue.type))], ['内容'])
   assert.ok(result.issues.every((issue) => issue.text.includes('无法可靠归因')))
+  assert.ok(result.issues.every((issue) => issue.reviewOnly === true))
+})
+
+test('single-sided contour evidence never invents a size or position finding', async () => {
+  const width = 80
+  const height = 80
+  const design = opaqueRaster(width, height)
+  const implementation = opaqueRaster(width, height)
+
+  for (let y = 30; y < 42; y++) {
+    for (let x = 34; x < 46; x++) setPixel(implementation, width, x, y, [25, 25, 25])
+  }
+
+  const result = await compare(design, implementation, width, height)
+
+  assert.ok(result.issues.every((issue) => !['尺寸', '位置', '布局'].includes(issue.type)))
 })
 
 test('a flat horizontal bar is not inferred to be text', async () => {

@@ -40,7 +40,7 @@ function getRasterContext(canvas) {
   return context
 }
 
-function readRaster(image, width, height, drawWidth, drawHeight) {
+function readRaster(image, width, height, drawWidth, drawHeight, drawX = 0, drawY = 0) {
   const canvas = createRasterCanvas(width, height)
   const context = getRasterContext(canvas)
   // Canvas starts transparent, but clearing explicitly keeps repeated browser
@@ -48,7 +48,7 @@ function readRaster(image, width, height, drawWidth, drawHeight) {
   // the unmatched bottom of the shorter image remains observable even when the
   // longer image happens to end in solid white.
   context.clearRect(0, 0, width, height)
-  context.drawImage(image, 0, 0, drawWidth, drawHeight)
+  context.drawImage(image, drawX, drawY, drawWidth, drawHeight)
   return context.getImageData(0, 0, width, height).data
 }
 
@@ -65,18 +65,39 @@ function readRaster(image, width, height, drawWidth, drawHeight) {
 export async function analyzeImages({
   designImage,
   implementationImage,
+  alignment = 'top-left',
+  anchors = null,
   signal,
   onProgress,
 }) {
   throwIfAborted(signal)
   reportProgress(onProgress, 'prepare', 0)
 
-  const normalization = buildWidthNormalization(designImage, implementationImage)
-  const sourceProfile = buildComparisonProfile(designImage, implementationImage)
+  const normalization = buildWidthNormalization(
+    designImage,
+    implementationImage,
+    { alignment, anchors },
+  )
+  const sourceProfile = buildComparisonProfile(
+    designImage,
+    implementationImage,
+    { alignment, anchors },
+  )
+  if (alignment === 'element' && !normalization.anchorReady) {
+    throw new Error('Element alignment requires matching design and implementation anchors')
+  }
+  if (alignment === 'element' && normalization.sharedAreaRatio < 0.55) {
+    throw new Error('The selected elements leave too little overlapping page area to compare safely')
+  }
+  const scaledIgnoreTop = Math.round(
+    sourceProfile.ignoreTop * normalization.implementationScale,
+  )
   const baseProfile = {
     ...sourceProfile,
     sourceIgnoreTop: sourceProfile.ignoreTop,
-    ignoreTop: Math.round(sourceProfile.ignoreTop * normalization.implementationScale),
+    ignoreTop: scaledIgnoreTop,
+    ignoreTopStart: normalization.implementationOffsetY,
+    ignoreTopEnd: normalization.implementationOffsetY + scaledIgnoreTop,
     normalization,
     targetWidth: normalization.targetWidth,
     targetHeight: normalization.canvasHeight,
@@ -84,23 +105,67 @@ export async function analyzeImages({
     implementationScale: normalization.implementationScale,
     designNormalizedHeight: normalization.designHeight,
     implementationNormalizedHeight: normalization.implementationHeight,
+    designOffsetX: normalization.designOffsetX,
+    designOffsetY: normalization.designOffsetY,
+    implementationOffsetX: normalization.implementationOffsetX,
+    implementationOffsetY: normalization.implementationOffsetY,
     normalizedDesignHeight: normalization.designHeight,
     normalizedImplementationHeight: normalization.implementationHeight,
     comparisonWidth: normalization.canvasWidth,
     comparisonHeight: normalization.canvasHeight,
   }
+  const analysisRect = alignment === 'element'
+    ? normalization.overlapRect
+    : {
+        x: 0,
+        y: 0,
+        width: normalization.canvasWidth,
+        height: normalization.canvasHeight,
+      }
+  if (!analysisRect.width || !analysisRect.height) {
+    throw new Error('The selected elements do not leave an overlapping comparison area')
+  }
   const ratio = Math.min(
     1,
     MAX_ANALYSIS_SIDE /
-      Math.max(normalization.canvasWidth, normalization.canvasHeight),
+      Math.max(analysisRect.width, analysisRect.height),
   )
-  const width = Math.max(1, Math.round(normalization.canvasWidth * ratio))
-  const height = Math.max(1, Math.round(normalization.canvasHeight * ratio))
+  const width = Math.max(1, Math.round(analysisRect.width * ratio))
+  const height = Math.max(1, Math.round(analysisRect.height * ratio))
+  const designWidth = Math.max(1, Math.round(normalization.designWidth * ratio))
   const designHeight = Math.max(1, Math.round(normalization.designHeight * ratio))
+  const implementationWidth = Math.max(
+    1,
+    Math.round(normalization.implementationWidth * ratio),
+  )
   const implementationHeight = Math.max(
     1,
     Math.round(normalization.implementationHeight * ratio),
   )
+  const designOffsetX = Math.round((normalization.designOffsetX - analysisRect.x) * ratio)
+  const designOffsetY = Math.round((normalization.designOffsetY - analysisRect.y) * ratio)
+  const implementationOffsetX = Math.round(
+    (normalization.implementationOffsetX - analysisRect.x) * ratio,
+  )
+  const implementationOffsetY = Math.round(
+    (normalization.implementationOffsetY - analysisRect.y) * ratio,
+  )
+  const fullIgnoreTopStart = normalization.implementationOffsetY
+  const fullIgnoreTopEnd = fullIgnoreTopStart + scaledIgnoreTop
+  const clippedIgnoreTopStart = Math.max(analysisRect.y, fullIgnoreTopStart)
+  const clippedIgnoreTopEnd = Math.min(
+    analysisRect.y + analysisRect.height,
+    fullIgnoreTopEnd,
+  )
+  const analysisIgnoreTop = Math.max(0, clippedIgnoreTopEnd - clippedIgnoreTopStart)
+  const analysisProfile = {
+    ...baseProfile,
+    comparisonWidth: analysisRect.width,
+    comparisonHeight: analysisRect.height,
+    ignoreTop: analysisIgnoreTop,
+    ignoreTopStart: Math.max(0, clippedIgnoreTopStart - analysisRect.y),
+    ignoreTopEnd: Math.max(0, clippedIgnoreTopStart - analysisRect.y) + analysisIgnoreTop,
+  }
 
   await yieldToHost(signal)
   reportProgress(onProgress, 'rasterize', 5)
@@ -108,13 +173,23 @@ export async function analyzeImages({
   let designPixels
   let implementationPixels
   try {
-    designPixels = readRaster(designImage, width, height, width, designHeight)
+    designPixels = readRaster(
+      designImage,
+      width,
+      height,
+      designWidth,
+      designHeight,
+      designOffsetX,
+      designOffsetY,
+    )
     implementationPixels = readRaster(
       implementationImage,
       width,
       height,
-      width,
+      implementationWidth,
       implementationHeight,
+      implementationOffsetX,
+      implementationOffsetY,
     )
   } catch (error) {
     if (error?.name === 'SecurityError') {
@@ -133,14 +208,14 @@ export async function analyzeImages({
     implementationPixels,
     width,
     height,
-    profile: baseProfile,
+    profile: analysisProfile,
   })
 
   // A low score means the rasters may represent different pages or states.
   // Pixel differences are still real, but classifying them as UI defects would
   // overstate what the image evidence can prove, so stop before classification.
   if (comparability.status === 'low') {
-    const profile = { ...baseProfile, comparability }
+    const profile = { ...baseProfile, comparability, analysisRect }
     reportProgress(onProgress, 'complete', 100)
     return {
       profile,
@@ -157,17 +232,25 @@ export async function analyzeImages({
     implementationPixels,
     width,
     height,
-    outputWidth: normalization.canvasWidth,
-    outputHeight: normalization.canvasHeight,
-    profile: baseProfile,
+    outputWidth: analysisRect.width,
+    outputHeight: analysisRect.height,
+    profile: analysisProfile,
     signal,
     onProgress,
   })
 
   throwIfAborted(signal)
   reportProgress(onProgress, 'group', 96)
-  const profile = { ...baseProfile, ...diff.metrics, comparability }
-  const issues = excludeStatusBarIssues(diff.issues, profile)
+  const profile = { ...baseProfile, ...diff.metrics, comparability, analysisRect }
+  const translatedIssues = diff.issues.map((issue) => ({
+    ...issue,
+    box: {
+      ...issue.box,
+      x: issue.box.x + analysisRect.x,
+      y: issue.box.y + analysisRect.y,
+    },
+  }))
+  const issues = excludeStatusBarIssues(translatedIssues, profile)
   const groups = groupIssues(issues, {
     width: normalization.canvasWidth,
     height: normalization.canvasHeight,

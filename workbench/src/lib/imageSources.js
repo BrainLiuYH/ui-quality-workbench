@@ -1,3 +1,5 @@
+import { buildWidthNormalization } from "../engine/profile.js";
+
 const ACCEPTED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 const MAX_FILE_BYTES = 40 * 1024 * 1024;
 const MAX_PIXELS = 32 * 1024 * 1024;
@@ -58,34 +60,54 @@ export function decodeImageSource(source) {
   return createImageBitmap(source.file);
 }
 
-export function deriveComparisonProfile(design, implementation) {
+export function deriveComparisonProfile(design, implementation, { alignment = "top-left", anchors = null } = {}) {
   if (!design || !implementation) return null;
-  const targetWidth = Math.max(design.width, implementation.width);
-  const designScale = targetWidth / design.width;
-  const implementationScale = targetWidth / implementation.width;
-  const designNormalizedHeight = Math.max(1, Math.round(design.height * designScale));
-  const implementationNormalizedHeight = Math.max(1, Math.round(implementation.height * implementationScale));
-  const targetHeight = Math.max(designNormalizedHeight, implementationNormalizedHeight);
-  const normalizedPixels = targetWidth * targetHeight;
+  const normalization = buildWidthNormalization(design, implementation, {
+    alignment,
+    anchors,
+    maxPixels: Number.MAX_SAFE_INTEGER,
+  });
+  const targetWidth = normalization.targetWidth;
+  const targetHeight = normalization.canvasHeight;
+  const normalizedPixels = normalization.pixels;
   const widthsDiffer = design.width !== implementation.width;
-  const heightsDiffer = designNormalizedHeight !== implementationNormalizedHeight;
+  const heightsDiffer = normalization.designHeight !== normalization.implementationHeight;
+  const bottomAligned = normalization.alignment === "bottom-left";
 
   return {
     mode: widthsDiffer ? "width-normalized" : "same-width",
-    label: widthsDiffer ? "等比放大至同宽" : heightsDiffer ? "同宽顶部对齐" : "原尺寸对比",
+    label: alignment === "element"
+      ? normalization.anchorReady ? "按选中元素对齐" : "等待框选对应元素"
+      : widthsDiffer
+      ? `等比放大至同宽${heightsDiffer ? ` · ${bottomAligned ? "底部" : "顶部"}对齐` : ""}`
+      : heightsDiffer
+        ? `同宽${bottomAligned ? "底部" : "顶部"}对齐`
+        : "原尺寸对比",
     targetWidth,
     targetHeight,
     normalizedPixels,
     exceedsSafetyLimit: !Number.isSafeInteger(normalizedPixels) || normalizedPixels > MAX_NORMALIZED_PIXELS,
-    designScale,
-    implementationScale,
+    designScale: normalization.designScale,
+    implementationScale: normalization.implementationScale,
     designNormalizedWidth: targetWidth,
-    designNormalizedHeight,
+    designNormalizedHeight: normalization.designHeight,
     implementationNormalizedWidth: targetWidth,
-    implementationNormalizedHeight,
+    implementationNormalizedHeight: normalization.implementationHeight,
+    designOffsetX: normalization.designOffsetX,
+    designOffsetY: normalization.designOffsetY,
+    implementationOffsetX: normalization.implementationOffsetX,
+    implementationOffsetY: normalization.implementationOffsetY,
+    comparisonWidth: normalization.canvasWidth,
+    comparisonHeight: normalization.canvasHeight,
     widthsDiffer,
     heightsDiffer,
-    alignment: "top-left",
+    alignment,
+    verticalAlignment: alignment === "element" ? "element" : bottomAligned ? "bottom" : "top",
+    anchorReady: normalization.anchorReady,
+    anchors: normalization.anchors,
+    anchorDelta: normalization.anchorDelta,
+    overlapRect: normalization.overlapRect,
+    sharedAreaRatio: normalization.sharedAreaRatio,
   };
 }
 

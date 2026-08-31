@@ -12,11 +12,13 @@ self.onmessage = async (event) => {
   const message = event.data
   if (message?.type !== 'analyze') return
 
-  const { designImage, implementationImage } = message
+  const { designImage, implementationImage, alignment, anchors } = message
   try {
     const result = await analyzeImages({
       designImage,
       implementationImage,
+      alignment,
+      anchors,
       onProgress: (progress) => self.postMessage({ type: 'progress', progress }),
     })
     self.postMessage({ type: 'result', result })

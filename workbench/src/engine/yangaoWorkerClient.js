@@ -19,6 +19,8 @@ function deserializeWorkerError(payload) {
 export function analyzeImagesInWorker({
   designFile,
   implementationFile,
+  alignment = 'top-left',
+  anchors = null,
   signal,
   onProgress,
 }) {
@@ -117,6 +119,8 @@ export function analyzeImagesInWorker({
           type: 'analyze',
           designImage: designBitmap,
           implementationImage: implementationBitmap,
+          alignment,
+          anchors,
         }, [designBitmap, implementationBitmap])
         transferred = true
       } catch (error) {

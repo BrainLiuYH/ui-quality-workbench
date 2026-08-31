@@ -230,6 +230,7 @@ function describeGroup(members, segments = []) {
     element: segments.length > 1 ? '组合视觉区域' : lead.element,
     types,
     members: ordered,
+    reviewOnly: ordered.every((member) => member.reviewOnly === true),
     segments,
     box: unionBox(ordered.map((member) => member.box)),
     text: `${ordered.length}项问题：${types.join(' / ')}`,
@@ -293,11 +294,14 @@ export function groupDisplayName(group, dimensions = {}) {
   const hasGraphic = groupHasGraphicEvidence(group)
   const compactGraphic = isCompactGraphicShape(group.box, dimensions)
   const elements = groupElements(group)
-  const pagePresence = elements.some((element) => element.includes('页面底部或高度区域'))
+  const pagePresence = elements.find((element) =>
+    element.includes('页面底部或高度区域') ||
+    element.includes('页面顶部或高度区域'),
+  )
   const regionPresence = group.types.includes('布局') &&
     elements.some((element) => element === '区域内容')
 
-  if (pagePresence) return '页面底部或高度区域'
+  if (pagePresence) return pagePresence
   if (regionPresence) return '区域内容'
   if (objectRole === 'media') return '图像区域'
   if (objectRole === 'container') return '容器区域'
@@ -312,7 +316,7 @@ export function groupDisplayName(group, dimensions = {}) {
   if (hasText && aspect > 1.55 && group.box.h < 140) return '文字内容'
   if (hasText) return '文字区域'
   if (compactGraphic && hasGraphic) return '图标或图形'
-  if (compactGraphic) return '小型图形'
+  if (compactGraphic) return '局部视觉差异'
   if (segments.length > 1) return '组合视觉区域'
   if (group.types.includes('边框')) return '边界差异'
   return '视觉差异区域'

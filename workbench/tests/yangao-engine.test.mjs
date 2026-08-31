@@ -54,6 +54,64 @@ test('buildWidthNormalization enlarges only the narrower image and preserves asp
   )
 })
 
+test('buildWidthNormalization bottom-aligns both normalized image rectangles', () => {
+  const normalized = buildWidthNormalization(
+    bitmapLike(600, 900),
+    bitmapLike(1200, 1000),
+    { alignment: 'bottom-left' },
+  )
+
+  assert.equal(normalized.alignment, 'bottom-left')
+  assert.equal(normalized.verticalAlignment, 'bottom')
+  assert.equal(normalized.designOffsetY, 0)
+  assert.equal(normalized.implementationOffsetY, 800)
+  assert.equal(normalized.designOffsetY + normalized.designHeight, normalized.canvasHeight)
+  assert.equal(
+    normalized.implementationOffsetY + normalized.implementationHeight,
+    normalized.canvasHeight,
+  )
+})
+
+test('buildWidthNormalization uses element centers to create a non-cropping union canvas', () => {
+  const normalized = buildWidthNormalization(
+    bitmapLike(100, 100),
+    bitmapLike(100, 100),
+    {
+      alignment: 'element',
+      anchors: {
+        design: { x: 20, y: 30, width: 40, height: 20 },
+        implementation: { x: 35, y: 20, width: 20, height: 20 },
+      },
+    },
+  )
+
+  assert.equal(normalized.anchorReady, true)
+  assert.deepEqual(normalized.anchorDelta, { x: -5, y: 10 })
+  assert.equal(normalized.canvasWidth, 105)
+  assert.equal(normalized.canvasHeight, 110)
+  assert.equal(normalized.designWidth, 100)
+  assert.equal(normalized.implementationWidth, 100)
+  assert.ok(normalized.sharedAreaRatio > 0.8)
+})
+
+test('recognized visual anchor points override unequal hand-drawn box centers', () => {
+  const normalized = buildWidthNormalization(
+    bitmapLike(200, 160),
+    bitmapLike(200, 160),
+    {
+      alignment: 'element',
+      anchors: {
+        design: { x: 20, y: 20, width: 90, height: 50, anchorX: 80, anchorY: 44 },
+        implementation: { x: 45, y: 30, width: 50, height: 28, anchorX: 92, anchorY: 51 },
+      },
+    },
+  )
+
+  assert.deepEqual(normalized.anchorDelta, { x: -12, y: -7 })
+  assert.equal(normalized.anchors.design.anchorX, 80)
+  assert.equal(normalized.anchors.implementation.anchorX, 92)
+})
+
 test('buildWidthNormalization rejects a normalized canvas above the 32 MP safety limit', () => {
   assert.throws(
     () => buildWidthNormalization(
@@ -222,6 +280,44 @@ test('diffRasters reports extra implementation content as a single objective lay
     issue.text.includes('设计稿') && issue.text.includes('缺少'),
   ))
   assert.equal(result.issues.length, 1)
+})
+
+test('diffRasters treats unmatched top padding as one page-height issue in bottom mode', async () => {
+  const width = 16
+  const height = 16
+  const designPixels = new Uint8ClampedArray(width * height * 4)
+  const implementationPixels = new Uint8ClampedArray(width * height * 4)
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const index = (y * width + x) * 4
+      designPixels[index] = 255
+      designPixels[index + 1] = 255
+      designPixels[index + 2] = 255
+      designPixels[index + 3] = 255
+      if (y >= height / 2) {
+        implementationPixels[index] = 255
+        implementationPixels[index + 1] = 255
+        implementationPixels[index + 2] = 255
+        implementationPixels[index + 3] = 255
+      }
+    }
+  }
+
+  const result = await diffRasters({
+    designPixels,
+    implementationPixels,
+    width,
+    height,
+    outputWidth: width,
+    outputHeight: height,
+    profile: { mode: 'exact', alignment: 'bottom-left', ignoreTop: 0 },
+  })
+
+  assert.equal(result.issues.length, 1)
+  assert.equal(result.issues[0].type, '布局')
+  assert.equal(result.issues[0].element, '页面顶部或高度区域')
+  assert.ok(result.issues[0].box.y < height / 2)
 })
 
 test('diffRasters keeps ordinary opaque color detection compatible', async () => {

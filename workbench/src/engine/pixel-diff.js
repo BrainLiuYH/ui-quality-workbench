@@ -82,7 +82,13 @@ export async function diffRasters({
 
   const widthNormalized = profile.mode === 'width-normalized'
   const tolerance = widthNormalized ? 2.8 : 1
-  const analysisIgnoreTop = Math.round((profile.ignoreTop || 0) * height / outputHeight)
+  const analysisIgnoreTopHeight = Math.round(
+    (profile.ignoreTop || 0) * height / outputHeight,
+  )
+  const analysisIgnoreTopStart = Math.round(
+    (profile.ignoreTopStart || 0) * height / outputHeight,
+  )
+  const analysisIgnoreTopEnd = analysisIgnoreTopStart + analysisIgnoreTopHeight
   const deltaMap = new Uint8Array(pixels)
   const designLuminance = new Uint8Array(pixels)
   const implementationLuminance = new Uint8Array(pixels)
@@ -105,7 +111,9 @@ export async function diffRasters({
         rgbaIndex,
       )
 
-      if (widthNormalized && y >= analysisIgnoreTop) {
+      const insideIgnoredTop = y >= analysisIgnoreTopStart &&
+        y < analysisIgnoreTopEnd
+      if (widthNormalized && !insideIgnoredTop) {
         for (let deltaY = -1; deltaY <= 1; deltaY++) {
           for (let deltaX = -1; deltaX <= 1; deltaX++) {
             const neighbourX = x + deltaX
@@ -124,11 +132,11 @@ export async function diffRasters({
         }
       }
 
-      deltaMap[pixelIndex] = y < analysisIgnoreTop
+      deltaMap[pixelIndex] = insideIgnoredTop
         ? 0
         : Math.min(255, Math.round(visualDelta))
 
-      if (y >= analysisIgnoreTop) {
+      if (!insideIgnoredTop) {
         deltaSum += deltaMap[pixelIndex]
         if (deltaMap[pixelIndex] > 45) strongDeltaCount++
         deltaCount++
@@ -161,7 +169,8 @@ export async function diffRasters({
 
   reportProgress(onProgress, 'edge-diff', 38)
   if (!widthNormalized) {
-    for (let y = analysisIgnoreTop; y < height - 1; y++) {
+    for (let y = 0; y < height - 1; y++) {
+      if (y >= analysisIgnoreTopStart && y < analysisIgnoreTopEnd) continue
       for (let x = 0; x < width - 1; x++) {
         const pixelIndex = y * width + x
         const designGradient = Math.max(
@@ -281,7 +290,7 @@ export async function diffRasters({
       if (count >= (level === 0 ? 1 : 2)) {
         const padding = level === 0 ? 1 : 0
         const x = Math.max(0, (minX - padding) * cell)
-        const y = Math.max(analysisIgnoreTop, (minY - padding) * cell)
+        const y = Math.max(0, (minY - padding) * cell)
         const partWidth = Math.min(
           width - x,
           (maxX - minX + 1 + padding * 2) * cell,
@@ -567,6 +576,7 @@ export async function diffRasters({
       corner: cornerCount / safeEdges,
       interior: interiorCount / safeEdges,
       edgeCount,
+      hasEdge,
       x: Math.round((hasEdge ? sumX / safeEdges : part.x + part.w / 2) * scaleX),
       y: Math.round((hasEdge ? sumY / safeEdges : part.y + part.h / 2) * scaleY),
       left: Math.round((hasEdge ? minX : part.x) * scaleX),
@@ -627,21 +637,32 @@ export async function diffRasters({
       h: Math.min(outputHeight - cellBoxY, Math.max(1, Math.round(part.h * scaleY))),
     }
     const edgePadding = Math.max(2, Math.round(Math.min(outputWidth, outputHeight) / 360))
-    const useEdgeBox = implementationMetrics.edgeCount >= 4 &&
+    const useEdgeBox = designMetrics.hasEdge && implementationMetrics.hasEdge &&
+      designMetrics.w >= 4 && designMetrics.h >= 4 &&
       implementationMetrics.w >= 4 && implementationMetrics.h >= 4
-    const edgeX = Math.max(0, implementationMetrics.left - edgePadding)
-    const edgeY = Math.max(profile.ignoreTop || 0, implementationMetrics.top - edgePadding)
+    const edgeLeft = Math.min(designMetrics.left, implementationMetrics.left)
+    const edgeTop = Math.min(designMetrics.top, implementationMetrics.top)
+    const edgeRight = Math.max(
+      designMetrics.left + designMetrics.w,
+      implementationMetrics.left + implementationMetrics.w,
+    )
+    const edgeBottom = Math.max(
+      designMetrics.top + designMetrics.h,
+      implementationMetrics.top + implementationMetrics.h,
+    )
+    const edgeX = Math.max(0, edgeLeft - edgePadding)
+    const edgeY = Math.max(0, edgeTop - edgePadding)
     const box = useEdgeBox
       ? {
           x: Math.round(edgeX),
           y: Math.round(edgeY),
           w: Math.min(
             outputWidth - Math.round(edgeX),
-            implementationMetrics.w + edgePadding * 2,
+            edgeRight - edgeLeft + edgePadding * 2,
           ),
           h: Math.min(
             outputHeight - Math.round(edgeY),
-            implementationMetrics.h + edgePadding * 2,
+            edgeBottom - edgeTop + edgePadding * 2,
           ),
         }
       : cellBox
@@ -658,18 +679,25 @@ export async function diffRasters({
       const oneSidedCoverage = designOnly
         ? presence.designOnlyCoverage
         : presence.implementationOnlyCoverage
-      const pageBottomRegion = part.y + part.h >= height - 1 && part.w >= width * 0.5
+      const bottomAligned = profile.alignment === 'bottom-left' ||
+        profile.verticalAlignment === 'bottom'
+      const pageHeightRegion = part.w >= width * 0.5 && (bottomAligned
+        ? part.y <= 1
+        : part.y + part.h >= height - 1)
+      const pageHeightElement = bottomAligned
+        ? '页面顶部或高度区域'
+        : '页面底部或高度区域'
       rawIssues.push({
         ...baseIssue,
         type: '布局',
-        element: pageBottomRegion ? '页面底部或高度区域' : '区域内容',
+        element: pageHeightRegion ? pageHeightElement : '区域内容',
         design_value: designOnly
           ? '存在可见内容'
           : `其中 ${toPercent(oneSidedCoverage)} 的区域无对应可见内容`,
         implementation_value: implementationOnly
           ? `存在额外可见内容（单侧区域 ${toPercent(oneSidedCoverage)}）`
           : `其中 ${toPercent(oneSidedCoverage)} 的区域无对应可见内容`,
-        text: `${pageBottomRegion ? '页面高度或底部区域' : '区域'}存在差异：` +
+        text: `${pageHeightRegion ? `页面高度或${bottomAligned ? '顶部' : '底部'}区域` : '区域'}存在差异：` +
           `${missingSide}在该位置缺少${presentSide}中的对应可见内容` +
           `（单侧可见区域 ${toPercent(oneSidedCoverage)}）`,
         confidence: oneSidedCoverage * 100,
@@ -727,8 +755,8 @@ export async function diffRasters({
       internallyTextured &&
       (longestSide >= 120 || area >= 0.06) &&
       (colorDelta > (widthNormalized ? 16 : 9) || densityDelta > 0.025 || part.score > 28)
-    const verySlender = regionAspect > 9 || regionAspect < 1 / 9 ||
-      visibleAspect > 9 || visibleAspect < 1 / 9 ||
+    const verySlender = regionAspect > 7 || regionAspect < 1 / 7 ||
+      visibleAspect > 7 || visibleAspect < 1 / 7 ||
       (shortestSide <= Math.max(5, Math.round(Math.min(outputWidth, outputHeight) / 180)) &&
         (regionAspect > 4.5 || regionAspect < 1 / 4.5))
     const colorThreshold = widthNormalized ? 12 : 5
@@ -759,6 +787,7 @@ export async function diffRasters({
         implementation_value: `可见轮廓密度 ${toPercent(implementationMetrics.density)}，平均颜色 ${implementationColor}`,
         text: '该区域的可见内容差异较大；仅凭像素证据无法可靠归因到尺寸、位置、文字、图标或组件样式',
         confidence: Math.max(colorDelta, densityDelta * 100, part.score),
+        reviewOnly: true,
       })
 
       if (index % 12 === 11) {
@@ -776,9 +805,21 @@ export async function diffRasters({
     // A very thin connected fragment is not enough evidence for a standalone
     // element. It can be an anti-aliased edge or an internal contour of a
     // larger object, so do not turn it into a size/position result either.
-    const geometryAllowed = !verySlender
+    const minimumGeometryEdges = Math.max(4, Math.round(shortestSide / 8))
+    const edgeEvidenceBalance = Math.min(
+      designMetrics.edgeCount,
+      implementationMetrics.edgeCount,
+    ) / Math.max(1, designMetrics.edgeCount, implementationMetrics.edgeCount)
+    const bothSidesEdgeEvidence = designMetrics.edgeCount >= minimumGeometryEdges &&
+      implementationMetrics.edgeCount >= minimumGeometryEdges &&
+      edgeEvidenceBalance >= 0.28
+    const geometryAllowed = !verySlender && bothSidesEdgeEvidence
     const normalized = profile.mode === 'width-normalized' ? '归一化 ' : ''
-    const minimumGeometryDelta = Math.max(2, Math.round(shortestSide * 0.035))
+    const minimumGeometryDelta = Math.max(
+      4,
+      Math.round(Math.min(outputWidth, outputHeight) * 0.003),
+      Math.round(shortestSide * 0.08),
+    )
 
     if (geometryAllowed && sizeDelta >= minimumGeometryDelta) {
       candidates.push({
@@ -818,7 +859,7 @@ export async function diffRasters({
         text: `文字轮廓差异：设计 ${toPercent(designMetrics.density)}，实现 ${toPercent(implementationMetrics.density)}`,
       })
     }
-    const componentLike = !verySlender && regionAspect > 0.45 && regionAspect < 4 &&
+    const componentLike = geometryAllowed && regionAspect > 0.45 && regionAspect < 4 &&
       shortestSide >= 10 && longestSide <= 280 &&
       designMetrics.edgeCount >= 4 && implementationMetrics.edgeCount >= 4 &&
       Math.max(designMetrics.density, implementationMetrics.density) < 0.42
@@ -901,6 +942,7 @@ export async function diffRasters({
         design_value: `可见轮廓密度 ${toPercent(designMetrics.density)}`,
         implementation_value: `可见轮廓密度 ${toPercent(implementationMetrics.density)}`,
         text: '该区域存在明显的可见差异，但现有像素证据不足以可靠归因到具体尺寸、位置或样式属性',
+        reviewOnly: true,
       }
     }
 

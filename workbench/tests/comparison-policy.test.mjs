@@ -59,7 +59,7 @@ test('policy copy does not duplicate punctuation from engine reasons', () => {
   })
 
   assert.doesNotMatch(policy.description, /。。/)
-  assert.equal(policy.description, '页面结构无法对应。请换成同一页面、同一状态和相近内容的截图后重试。')
+  assert.equal(policy.description, '页面结构无法对应。请确认是同一页面、相近视口且主要布局能够对应后重试。')
 })
 
 test('blocking comparability reasons are shown before secondary warnings', () => {

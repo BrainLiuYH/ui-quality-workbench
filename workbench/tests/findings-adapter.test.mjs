@@ -1,30 +1,88 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { adaptYangaoGroups } from '../src/lib/findingsAdapter.js'
+import { adaptYangaoGroups, isActionableGroup } from '../src/lib/findingsAdapter.js'
 
-test('pixel magnitude never assigns product severity or delivery priority', () => {
-  const [finding] = adaptYangaoGroups([{
-    id: 'group-1',
-    severity: '严重',
-    score: 180,
-    element: '大面积视觉区域',
-    types: ['内容'],
-    box: { x: 0, y: 0, w: 500, h: 500 },
+function group({
+  id = 'group-1',
+  type = '颜色',
+  element = '容器区域',
+  box = { x: 68, y: 1911, w: 1360, h: 730 },
+  severity = '中等',
+  reviewOnly = false,
+} = {}) {
+  return {
+    id,
+    score: 58,
+    severity,
+    reviewOnly,
+    types: [type],
+    element,
+    box,
     members: [{
-      type: '内容',
-      severity: '严重',
-      score: 180,
-      element: '高纹理可见内容区域',
-      design_value: '设计稿可见内容',
-      implementation_value: '实现稿可见内容',
-      text: '内容差异',
-      box: { x: 0, y: 0, w: 500, h: 500 },
+      id: `${id}-member`,
+      type,
+      element,
+      box,
+      design_value: '#252427',
+      implementation_value: '#8591A5',
+      text: '引擎内部技术描述',
     }],
-  }])
+  }
+}
 
-  assert.equal(finding.severity, 'unrated')
-  assert.equal(finding.priority, '—')
-  assert.equal(finding.upstreamSeverity, '严重')
-  assert.equal(finding.engineMagnitude, 'major')
+test('adapter exposes short plain-language copy and keeps technical data out of the UI fields', () => {
+  const [finding] = adaptYangaoGroups([group()], {
+    targetWidth: 1500,
+    targetHeight: 3333,
+  })
+
+  assert.equal(finding.title, '这块区域颜色不一致')
+  assert.equal(finding.location, '页面下半部分')
+  assert.equal(finding.evidence, '两边看到的颜色明显不同')
+  assert.equal(finding.summary, '实现图这里的颜色和设计稿不一致。')
+  assert.doesNotMatch(
+    [finding.title, finding.location, finding.evidence, finding.summary].join(' '),
+    /归一|启发式|未校准|像素|边缘|重心|轮廓密度|x \d+px/,
+  )
+  assert.match(finding.technical.location, /x 68px/)
+  assert.equal(finding.technical.method, '像素与边缘启发式')
+})
+
+test('widespread fake-content variation does not become actionable color or tiny geometry findings', () => {
+  const context = {
+    targetWidth: 1500,
+    targetHeight: 3333,
+    comparability: {
+      reasons: [{ code: 'WIDESPREAD_CONTENT_VARIATION' }],
+    },
+  }
+  const groups = [
+    group({ id: 'color', type: '颜色' }),
+    group({
+      id: 'tiny-size',
+      type: '尺寸',
+      element: '局部视觉差异',
+      box: { x: 340, y: 260, w: 42, h: 36 },
+      severity: '轻微',
+    }),
+    group({
+      id: 'layout',
+      type: '布局',
+      element: '大面积布局区域',
+      box: { x: 120, y: 880, w: 1100, h: 520 },
+    }),
+  ]
+
+  const findings = adaptYangaoGroups(groups, context)
+
+  assert.deepEqual(findings.map((finding) => finding.engineGroupId), ['layout'])
+  assert.equal(findings[0].title, '这里的排布不一致')
+})
+
+test('review-only engine observations never create list rows or canvas annotations', () => {
+  const candidate = group({ type: '内容', element: '图像区域', reviewOnly: true })
+
+  assert.equal(isActionableGroup(candidate, { width: 1500, height: 3333 }), false)
+  assert.deepEqual(adaptYangaoGroups([candidate], { width: 1500, height: 3333 }), [])
 })

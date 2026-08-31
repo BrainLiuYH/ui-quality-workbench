@@ -45,7 +45,7 @@ export function resolveComparisonPolicy(comparability) {
       tone: "error",
       stateLabel: "输入可比性较低 · 已停止生成候选",
       title: "两张图暂不适合直接走查",
-      description: `${reasonClause}。请换成同一页面、同一状态和相近内容的截图后重试。`,
+      description: `${reasonClause}。请确认是同一页面、相近视口且主要布局能够对应后重试。`,
       notification: "输入可比性较低，已停止生成可能误导的问题",
     };
   }

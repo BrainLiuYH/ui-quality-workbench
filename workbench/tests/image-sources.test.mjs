@@ -58,6 +58,48 @@ test("deriveComparisonProfile applies the same max-width rule regardless of sour
   assert.equal(profile.implementationNormalizedHeight, 1200);
 });
 
+test("deriveComparisonProfile can anchor unequal heights to the bottom edge", () => {
+  const profile = deriveComparisonProfile(
+    { width: 720, height: 1000 },
+    { width: 1440, height: 1800 },
+    { alignment: "bottom-left" },
+  );
+
+  assert.equal(profile.alignment, "bottom-left");
+  assert.equal(profile.verticalAlignment, "bottom");
+  assert.equal(profile.designOffsetY, 0);
+  assert.equal(profile.implementationOffsetY, 200);
+  assert.equal(profile.designOffsetY + profile.designNormalizedHeight, profile.targetHeight);
+  assert.equal(profile.implementationOffsetY + profile.implementationNormalizedHeight, profile.targetHeight);
+  assert.match(profile.label, /底部对齐/);
+});
+
+test("deriveComparisonProfile aligns matching element centers without scaling", () => {
+  const profile = deriveComparisonProfile(
+    { width: 100, height: 100 },
+    { width: 100, height: 100 },
+    {
+      alignment: "element",
+      anchors: {
+        design: { x: 40, y: 40, width: 20, height: 20 },
+        implementation: { x: 50, y: 60, width: 20, height: 20 },
+      },
+    },
+  );
+
+  assert.equal(profile.anchorReady, true);
+  assert.deepEqual(profile.anchorDelta, { x: -10, y: -20 });
+  assert.equal(profile.designOffsetX, 10);
+  assert.equal(profile.designOffsetY, 20);
+  assert.equal(profile.implementationOffsetX, 0);
+  assert.equal(profile.implementationOffsetY, 0);
+  assert.equal(profile.comparisonWidth, 110);
+  assert.equal(profile.comparisonHeight, 120);
+  assert.deepEqual(profile.overlapRect, { x: 10, y: 20, width: 90, height: 80 });
+  assert.equal(profile.designScale, 1);
+  assert.equal(profile.implementationScale, 1);
+});
+
 test("deriveComparisonProfile leaves equal-width inputs at their original scale", () => {
   const profile = deriveComparisonProfile(
     { width: 1280, height: 720 },

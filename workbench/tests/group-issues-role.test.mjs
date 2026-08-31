@@ -55,6 +55,15 @@ test('42×67 return arrow can be described as a graphic', () => {
   assert.equal(group.element, '图标或图形')
 })
 
+test('a compact region without graphic evidence keeps a neutral local name', () => {
+  const [group] = groupIssues([
+    issue({ id: 'generic-compact', box: { x: 220, y: 160, w: 38, h: 44 } }),
+  ], dimensions)
+
+  assert.equal(group.element, '局部视觉差异')
+  assert.doesNotMatch(group.element, /图标|图形/)
+})
+
 test('confirmed adjacent text segments form one true text row', () => {
   const groups = groupIssues([
     issue({
@@ -151,4 +160,17 @@ test('a bottom presence mismatch keeps its specific page-height role', () => {
   ], dimensions)
 
   assert.equal(group.element, '页面底部或高度区域')
+})
+
+test('a top presence mismatch keeps its specific page-height role', () => {
+  const [group] = groupIssues([
+    issue({
+      id: 'top-presence',
+      type: '布局',
+      element: '页面顶部或高度区域',
+      box: { x: 0, y: 0, w: 1000, h: 100 },
+    }),
+  ], dimensions)
+
+  assert.equal(group.element, '页面顶部或高度区域')
 })
