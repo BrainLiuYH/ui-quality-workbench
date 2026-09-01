@@ -126,6 +126,7 @@ test('excludeStatusBarIssues removes mobile system chrome only', () => {
   const profile = { ignoreTop: 60, implementationWidth: 390 }
   const issues = [
     { id: 'issue-1', box: { x: 0, y: 8, w: 390, h: 30 } },
+    { id: 'issue-1-cell-tail', box: { x: 270, y: 50, w: 60, h: 20 } },
     { id: 'issue-2', box: { x: 20, y: 120, w: 100, h: 40 } },
   ]
 

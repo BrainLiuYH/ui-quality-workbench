@@ -26,6 +26,49 @@ function smallOverlap(a, b) {
   return intersection(a, b) / Math.max(1, Math.min(a.w * a.h, b.w * b.h))
 }
 
+function containedBy(inner, outer) {
+  return intersection(inner, outer) / Math.max(1, inner.w * inner.h)
+}
+
+/**
+ * Demote only flat colour fragments that sit inside a previously recognised
+ * review-only media region. A stable bilateral component contour wins over
+ * the media context so real button, badge, or control colour changes remain
+ * actionable. Other issue types are deliberately untouched.
+ */
+export function demoteNestedMediaColorIssues(issues = []) {
+  const mediaEnvelopes = issues.filter((issue) =>
+    issue?.type === '内容' &&
+    issue.reviewOnly === true &&
+    issue.mediaEnvelope === true &&
+    issue.box,
+  )
+  if (!mediaEnvelopes.length) return issues
+
+  return issues.map((issue) => {
+    if (issue?.type !== '颜色' || issue.stableComponentContour === true || !issue.box) {
+      return issue
+    }
+
+    const issueArea = issue.box.w * issue.box.h
+    const envelope = mediaEnvelopes.find((candidate) => {
+      const envelopeArea = candidate.box.w * candidate.box.h
+      return issueArea <= envelopeArea * 0.3 &&
+        containedBy(issue.box, candidate.box) >= 0.9
+    })
+    if (!envelope) return issue
+
+    return {
+      ...issue,
+      type: '内容',
+      element: '媒体内容区域',
+      text: '该颜色差异位于已识别的图片或媒体内容内；现有像素证据不足以证明是组件样式变化',
+      reviewOnly: true,
+      mediaEnvelopeId: envelope.partId,
+    }
+  })
+}
+
 function toHex(rgb) {
   return `#${rgb
     .map((value) => Math.round(value).toString(16).padStart(2, '0'))
@@ -89,6 +132,14 @@ export async function diffRasters({
     (profile.ignoreTopStart || 0) * height / outputHeight,
   )
   const analysisIgnoreTopEnd = analysisIgnoreTopStart + analysisIgnoreTopHeight
+  const contentVariationExpected = Boolean(
+    profile?.comparability?.reasons?.some((entry) => {
+      const code = typeof entry === 'string' ? entry : entry?.code
+      return code === 'WIDESPREAD_CONTENT_VARIATION' ||
+        code === 'LOCALIZED_CONTENT_DIFFERENCE' ||
+        code === 'GLOBAL_STRONG_DIFFERENCE'
+    }),
+  )
   const deltaMap = new Uint8Array(pixels)
   const designLuminance = new Uint8Array(pixels)
   const implementationLuminance = new Uint8Array(pixels)
@@ -114,6 +165,8 @@ export async function diffRasters({
       const insideIgnoredTop = y >= analysisIgnoreTopStart &&
         y < analysisIgnoreTopEnd
       if (widthNormalized && !insideIgnoredTop) {
+        let implementationPixelMatch = visualDelta
+        let designPixelMatch = visualDelta
         for (let deltaY = -1; deltaY <= 1; deltaY++) {
           for (let deltaX = -1; deltaX <= 1; deltaX++) {
             const neighbourX = x + deltaX
@@ -121,15 +174,33 @@ export async function diffRasters({
             if (neighbourX < 0 || neighbourY < 0 ||
               neighbourX >= width || neighbourY >= height) continue
             const neighbourIndex = (neighbourY * width + neighbourX) * 4
-            const candidate = rgbaVisualDelta(
+            const implementationCandidate = rgbaVisualDelta(
               designPixels,
               implementationPixels,
               neighbourIndex,
               rgbaIndex,
             )
-            visualDelta = Math.min(visualDelta, candidate)
+            const designCandidate = rgbaVisualDelta(
+              designPixels,
+              implementationPixels,
+              rgbaIndex,
+              neighbourIndex,
+            )
+            implementationPixelMatch = Math.min(
+              implementationPixelMatch,
+              implementationCandidate,
+            )
+            designPixelMatch = Math.min(designPixelMatch, designCandidate)
           }
         }
+
+        // Local tolerance must not depend on which screenshot is called the
+        // design. Requiring a nearby match in both directions prevents a
+        // detailed region from disappearing merely because every pixel on the
+        // flatter side can find one similar neighbour on the detailed side.
+        // The conservative maximum also keeps one-sided alpha/layout changes
+        // visible instead of matching them away at a region boundary.
+        visualDelta = Math.max(implementationPixelMatch, designPixelMatch)
       }
 
       deltaMap[pixelIndex] = insideIgnoredTop
@@ -590,6 +661,88 @@ export async function diffRasters({
     let sampleCount = 0
     let designOnlyCount = 0
     let implementationOnlyCount = 0
+    const designOnlyBounds = {
+      minX: width,
+      minY: height,
+      maxX: 0,
+      maxY: 0,
+    }
+    const implementationOnlyBounds = {
+      minX: width,
+      minY: height,
+      maxX: 0,
+      maxY: 0,
+    }
+
+    const includeSample = (bounds, x, y) => {
+      bounds.minX = Math.min(bounds.minX, x)
+      bounds.minY = Math.min(bounds.minY, y)
+      bounds.maxX = Math.max(bounds.maxX, x + 1)
+      bounds.maxY = Math.max(bounds.maxY, y + 1)
+    }
+
+    const isDesignOnlyPixel = (x, y) => {
+      const rgbaIndex = (y * width + x) * 4
+      return designPixels[rgbaIndex + 3] / 255 >= 0.1 &&
+        implementationPixels[rgbaIndex + 3] / 255 <= 0.01
+    }
+
+    const isImplementationOnlyPixel = (x, y) => {
+      const rgbaIndex = (y * width + x) * 4
+      return implementationPixels[rgbaIndex + 3] / 255 >= 0.1 &&
+        designPixels[rgbaIndex + 3] / 255 <= 0.01
+    }
+
+    const visibleBounds = (bounds, count, isOneSidedPixel) => {
+      if (!count) return null
+
+      let { minX, minY, maxX, maxY } = bounds
+      const partRight = Math.min(width, part.x + part.w)
+      const partBottom = Math.min(height, part.y + part.h)
+
+      // Presence coverage is sampled every two pixels. Inspect the one row or
+      // column between samples so the returned boundary still describes the
+      // actual alpha transition instead of drifting by one pixel.
+      if (minX > part.x) {
+        for (let y = part.y; y < partBottom; y++) {
+          if (isOneSidedPixel(minX - 1, y)) {
+            minX--
+            break
+          }
+        }
+      }
+      if (maxX < partRight) {
+        for (let y = part.y; y < partBottom; y++) {
+          if (isOneSidedPixel(maxX, y)) {
+            maxX++
+            break
+          }
+        }
+      }
+      if (minY > part.y) {
+        for (let x = part.x; x < partRight; x++) {
+          if (isOneSidedPixel(x, minY - 1)) {
+            minY--
+            break
+          }
+        }
+      }
+      if (maxY < partBottom) {
+        for (let x = part.x; x < partRight; x++) {
+          if (isOneSidedPixel(x, maxY)) {
+            maxY++
+            break
+          }
+        }
+      }
+
+      return {
+        x: minX,
+        y: minY,
+        w: Math.max(1, maxX - minX),
+        h: Math.max(1, maxY - minY),
+      }
+    }
 
     for (let y = part.y; y < Math.min(height, part.y + part.h); y += 2) {
       for (let x = part.x; x < Math.min(width, part.x + part.w); x += 2) {
@@ -603,8 +756,10 @@ export async function diffRasters({
         // or anti-aliased edges as missing content.
         if (designAlpha >= 0.1 && implementationAlpha <= 0.01) {
           designOnlyCount++
+          includeSample(designOnlyBounds, x, y)
         } else if (implementationAlpha >= 0.1 && designAlpha <= 0.01) {
           implementationOnlyCount++
+          includeSample(implementationOnlyBounds, x, y)
         }
       }
     }
@@ -613,6 +768,29 @@ export async function diffRasters({
     return {
       designOnlyCoverage: designOnlyCount / safeSamples,
       implementationOnlyCoverage: implementationOnlyCount / safeSamples,
+      designOnlyBounds: visibleBounds(
+        designOnlyBounds,
+        designOnlyCount,
+        isDesignOnlyPixel,
+      ),
+      implementationOnlyBounds: visibleBounds(
+        implementationOnlyBounds,
+        implementationOnlyCount,
+        isImplementationOnlyPixel,
+      ),
+    }
+  }
+
+  function outputBoxForAnalysisBounds(bounds) {
+    const x = Math.max(0, Math.floor(bounds.x * scaleX))
+    const y = Math.max(0, Math.floor(bounds.y * scaleY))
+    const right = Math.min(outputWidth, Math.ceil((bounds.x + bounds.w) * scaleX))
+    const bottom = Math.min(outputHeight, Math.ceil((bounds.y + bounds.h) * scaleY))
+    return {
+      x,
+      y,
+      w: Math.max(1, right - x),
+      h: Math.max(1, bottom - y),
     }
   }
 
@@ -679,6 +857,9 @@ export async function diffRasters({
       const oneSidedCoverage = designOnly
         ? presence.designOnlyCoverage
         : presence.implementationOnlyCoverage
+      const oneSidedBounds = designOnly
+        ? presence.designOnlyBounds
+        : presence.implementationOnlyBounds
       const bottomAligned = profile.alignment === 'bottom-left' ||
         profile.verticalAlignment === 'bottom'
       const pageHeightRegion = part.w >= width * 0.5 && (bottomAligned
@@ -689,6 +870,13 @@ export async function diffRasters({
         : '页面底部或高度区域'
       rawIssues.push({
         ...baseIssue,
+        // A content difference immediately above unmatched transparent rows
+        // can merge into one connected part. Keep the ordinary region box for
+        // local presence changes, but a page-height issue must point only to
+        // the pixels that actually exist on one side.
+        box: pageHeightRegion && oneSidedBounds
+          ? outputBoxForAnalysisBounds(oneSidedBounds)
+          : baseIssue.box,
         type: '布局',
         element: pageHeightRegion ? pageHeightElement : '区域内容',
         design_value: designOnly
@@ -755,10 +943,35 @@ export async function diffRasters({
       internallyTextured &&
       (longestSide >= 120 || area >= 0.06) &&
       (colorDelta > (widthNormalized ? 16 : 9) || densityDelta > 0.025 || part.score > 28)
+    const broadVariableContentLike = contentVariationExpected &&
+      area >= 0.055 &&
+      cellBox.w >= outputWidth * 0.55 &&
+      shortestSide >= 20 &&
+      designMetrics.edgeCount >= Math.max(8, Math.round(shortestSide / 6)) &&
+      implementationMetrics.edgeCount >= Math.max(8, Math.round(shortestSide / 6)) &&
+      Math.min(designMetrics.density, implementationMetrics.density) >= 0.02 &&
+      Math.min(designMetrics.interior, implementationMetrics.interior) >= 0.035 &&
+      (colorDelta > (widthNormalized ? 12 : 8) || densityDelta > 0.02 || part.score > 24)
     const verySlender = regionAspect > 7 || regionAspect < 1 / 7 ||
       visibleAspect > 7 || visibleAspect < 1 / 7 ||
       (shortestSide <= Math.max(5, Math.round(Math.min(outputWidth, outputHeight) / 180)) &&
         (regionAspect > 4.5 || regionAspect < 1 / 4.5))
+    const stableComponentTolerance = Math.max(
+      4,
+      Math.round(Math.min(outputWidth, outputHeight) * 0.003),
+      Math.round(shortestSide * 0.08),
+    )
+    const stableComponentEdgeBalance = Math.min(
+      designMetrics.edgeCount,
+      implementationMetrics.edgeCount,
+    ) / Math.max(1, designMetrics.edgeCount, implementationMetrics.edgeCount)
+    const stableComponentContour = regionAspect > 0.45 && regionAspect < 4 &&
+      shortestSide >= 10 && longestSide <= 280 &&
+      designMetrics.edgeCount >= Math.max(4, Math.round(shortestSide / 8)) &&
+      implementationMetrics.edgeCount >= Math.max(4, Math.round(shortestSide / 8)) &&
+      stableComponentEdgeBalance >= 0.55 &&
+      sizeDelta < stableComponentTolerance * 2 &&
+      shift < stableComponentTolerance * 2
     const colorThreshold = widthNormalized ? 12 : 5
     const colorCandidate = colorDelta > colorThreshold
       ? {
@@ -770,6 +983,7 @@ export async function diffRasters({
           design_value: designColor,
           implementation_value: implementationColor,
           text: `颜色差异：设计 ${designColor}，实现 ${implementationColor}`,
+          stableComponentContour,
         }
       : null
 
@@ -778,7 +992,7 @@ export async function diffRasters({
     // directly comparable. Pixel evidence can prove that the visible content
     // differs, but cannot defensibly attribute that difference to layout,
     // typography, an icon, or a component style.
-    if (mediaLike) {
+    if (mediaLike || broadVariableContentLike) {
       rawIssues.push({
         ...baseIssue,
         type: '内容',
@@ -788,6 +1002,8 @@ export async function diffRasters({
         text: '该区域的可见内容差异较大；仅凭像素证据无法可靠归因到尺寸、位置、文字、图标或组件样式',
         confidence: Math.max(colorDelta, densityDelta * 100, part.score),
         reviewOnly: true,
+        mediaEnvelope: true,
+        partId: `part-${index + 1}`,
       })
 
       if (index % 12 === 11) {
@@ -955,7 +1171,8 @@ export async function diffRasters({
   }
 
   const issues = []
-  for (const issue of rawIssues.sort((a, b) =>
+  const noiseFilteredIssues = demoteNestedMediaColorIssues(rawIssues)
+  for (const issue of noiseFilteredIssues.sort((a, b) =>
     b.score - a.score || ISSUE_PRIORITY.indexOf(a.type) - ISSUE_PRIORITY.indexOf(b.type),
   )) {
     const duplicate = issues.some((existing) =>
@@ -963,7 +1180,14 @@ export async function diffRasters({
       smallOverlap(existing.box, issue.box) > 0.9,
     )
     if (duplicate) continue
-    const { confidence: _confidence, ...cleanIssue } = issue
+    const {
+      confidence: _confidence,
+      mediaEnvelope: _mediaEnvelope,
+      mediaEnvelopeId: _mediaEnvelopeId,
+      partId: _partId,
+      stableComponentContour: _stableComponentContour,
+      ...cleanIssue
+    } = issue
     issues.push(cleanIssue)
   }
 

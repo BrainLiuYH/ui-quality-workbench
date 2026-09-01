@@ -29,6 +29,10 @@ const THRESHOLDS = Object.freeze({
   widespreadLayoutCellCoverage: 0.28,
   coarseLayoutSimilarity: 0.6,
   coarseBoundaryEnergy: 4,
+  coherentLayoutComponentCoverage: 0.2,
+  coherentLayoutAxisCoverage: 0.45,
+  dominantLayoutCellCoverage: 0.55,
+  dominantLayoutAxisCoverage: 0.8,
 })
 
 function clamp(value, minimum, maximum) {
@@ -506,6 +510,11 @@ export function assessComparability({
   const structureChangedCellRatio = structureSpread.cells / validCellCount
   const layoutStructureChangedCellRatio = layoutStructureSpread.cells / validCellCount
   const largest = largestComponent(changedMask, columns, rows)
+  const largestLayoutStructure = largestComponent(
+    layoutStructureMask,
+    columns,
+    rows,
+  )
   const strongPixelRatio = strongPixels / Math.max(1, overlapPixels)
   const oneSidedTransparentRatio = oneSidedPixels / Math.max(1, unionPixels)
   const meanColourDelta = deltaSum / Math.max(1, overlapPixels)
@@ -566,9 +575,23 @@ export function assessComparability({
     THRESHOLDS.widespreadLayoutCellCoverage &&
     layoutStructureSpread.rowRatio >= THRESHOLDS.widespreadAxisCoverage &&
     layoutStructureSpread.columnRatio >= THRESHOLDS.widespreadAxisCoverage
+  // Dense media, charts, or several unrelated placeholder cards can change
+  // edge direction in many grid cells without changing the page skeleton.
+  // A blocking result therefore needs the suspicious layout evidence to form
+  // one coherent two-dimensional component, or to dominate nearly the whole
+  // page. Disconnected horizontal media bands remain reviewable content noise.
+  const coherentLayoutMismatch = largestLayoutStructure.count / validCellCount >=
+    THRESHOLDS.coherentLayoutComponentCoverage &&
+    largestLayoutStructure.rowRatio >= THRESHOLDS.coherentLayoutAxisCoverage &&
+    largestLayoutStructure.columnRatio >= THRESHOLDS.coherentLayoutAxisCoverage
+  const dominantLayoutMismatch = layoutStructureChangedCellRatio >=
+    THRESHOLDS.dominantLayoutCellCoverage &&
+    layoutStructureSpread.rowRatio >= THRESHOLDS.dominantLayoutAxisCoverage &&
+    layoutStructureSpread.columnRatio >= THRESHOLDS.dominantLayoutAxisCoverage
   const confirmedLayoutMismatch = widespreadLayoutStructure &&
     coarseLayout.similarity !== null &&
-    coarseLayout.similarity < THRESHOLDS.coarseLayoutSimilarity
+    coarseLayout.similarity < THRESHOLDS.coarseLayoutSimilarity &&
+    (coherentLayoutMismatch || dominantLayoutMismatch)
   const globalStrongDifference = strongPixelRatio >= THRESHOLDS.globalStrongPixelCoverage &&
     changedSpread.rowRatio >= 0.55 && changedSpread.columnRatio >= 0.55
   const widespreadContentVariation = widespreadVisual &&
@@ -695,6 +718,15 @@ export function assessComparability({
       layoutStructureChangedCellRatio: round(layoutStructureChangedCellRatio),
       layoutStructureChangedRowRatio: round(layoutStructureSpread.rowRatio),
       layoutStructureChangedColumnRatio: round(layoutStructureSpread.columnRatio),
+      largestLayoutStructureComponentRatio: round(
+        largestLayoutStructure.count / validCellCount,
+      ),
+      largestLayoutStructureComponentRowRatio: round(
+        largestLayoutStructure.rowRatio,
+      ),
+      largestLayoutStructureComponentColumnRatio: round(
+        largestLayoutStructure.columnRatio,
+      ),
       meanLayoutEdgeDensityDelta: round(totalLayoutDensityDelta / validCellCount),
       meanLayoutEdgeOrientationDelta: round(
         totalLayoutOrientationDelta / validCellCount,

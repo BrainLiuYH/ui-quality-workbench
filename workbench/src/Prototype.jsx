@@ -401,7 +401,7 @@ function ImageStage(props) {
   );
 }
 
-function SideBySideStage({ sources, zoom, findings, selectedId, onSelect, onUpload, onRemove, onDropFile, onDropError, profile, sourceActionsDisabled, focusRequest, anchorSelections, activeAnchorKind, onAnchorSelect, onAnchorInvalid }) {
+function SideBySideStage({ sources, zoom, findings, selectedId, onSelect, onUpload, onRemove, onDropFile, onDropError, profile, sourceActionsDisabled, focusRequest, anchorSelections, activeAnchorKind, anchorWorkflowActive = false, onAnchorSelect, onAnchorInvalid }) {
   const stageRef = useRef(null);
   const implementationFrameRef = useRef(null);
   const designFrameRef = useRef(null);
@@ -409,8 +409,8 @@ function SideBySideStage({ sources, zoom, findings, selectedId, onSelect, onUplo
   usePreviewNavigation({
     stageRef,
     focusFrameRef: implementationFrameRef,
-    resetKey: `${sources.design?.id || ""}|${sources.implementation?.id || ""}|${profile?.anchorDelta?.x || 0}|${profile?.anchorDelta?.y || 0}`,
-    alignment: profile?.alignment,
+    resetKey: `${sources.design?.id || ""}|${sources.implementation?.id || ""}|${profile?.anchorDelta?.x || 0}|${profile?.anchorDelta?.y || 0}|select:${anchorWorkflowActive}`,
+    alignment: anchorWorkflowActive ? "top-left" : profile?.alignment,
     frameWidth: placement.canvasWidth,
     focusRequest,
   });
@@ -518,10 +518,12 @@ function ComparisonCanvas({ mode, sources, zoom, findings, selectedId, onSelect,
   );
 
   if (mode === "side") {
+    const previewFindings = workflowActive ? [] : findings;
+    const previewFocusRequest = workflowActive ? null : focusRequest;
     return (
       <div className="comparison-content">
         {alignmentBanner}
-        <SideBySideStage sources={sources} zoom={zoom} findings={findings} selectedId={selectedId} onSelect={onSelect} onUpload={onUpload} onRemove={onRemove} onDropFile={onDropFile} onDropError={onDropError} profile={profile} sourceActionsDisabled={sourceActionsDisabled} focusRequest={focusRequest} anchorSelections={visibleAnchors} activeAnchorKind={activeAnchorKind} onAnchorSelect={onAnchorSelect} onAnchorInvalid={onAnchorInvalid} />
+        <SideBySideStage sources={sources} zoom={zoom} findings={previewFindings} selectedId={selectedId} onSelect={onSelect} onUpload={onUpload} onRemove={onRemove} onDropFile={onDropFile} onDropError={onDropError} profile={profile} sourceActionsDisabled={sourceActionsDisabled} focusRequest={previewFocusRequest} anchorSelections={visibleAnchors} activeAnchorKind={activeAnchorKind} anchorWorkflowActive={workflowActive} onAnchorSelect={onAnchorSelect} onAnchorInvalid={onAnchorInvalid} />
       </div>
     );
   }

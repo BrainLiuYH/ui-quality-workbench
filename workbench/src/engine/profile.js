@@ -258,7 +258,10 @@ export function isStatusBarOnly(box, profile) {
   )
   const buffer = Math.max(
     4,
-    Math.round((profile?.comparisonWidth || profile?.implementationWidth || 1000) * 0.015),
+    // Diff regions are assembled from coarse cells, so a system-bar fragment
+    // can extend slightly below the ignored pixels. Keep a small mobile-width
+    // guard band without reaching the first real application row.
+    Math.round((profile?.comparisonWidth || profile?.implementationWidth || 1000) * 0.025),
   )
 
   return (box.y >= start - buffer && box.y + boxHeight <= end + buffer) ||

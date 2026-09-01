@@ -8,6 +8,7 @@ const AMBIGUOUS_TEXT_PATTERN = /(或文字|文字或)/
 const GRAPHIC_ROLE_PATTERN = /(图标|图形|箭头)/
 const MEDIA_ROLE_PATTERN = /(图片|图像|照片|插图|主视觉|媒体|封面|头像)/
 const CONTAINER_ROLE_PATTERN = /(容器|大面积界面区域|大面积布局区域)/
+const COMPONENT_DETAIL_TYPES = new Set(['尺寸', '位置', '边框', '圆角', '阴影', '图标'])
 
 function boxIntersection(a, b) {
   const x = Math.max(a.x, b.x)
@@ -61,8 +62,39 @@ function isCompactGraphicShape(box, dimensions) {
     Math.min(box.w, box.h) >= 4 && maxSide <= sizeLimit
 }
 
+function isCompactComponentShape(box, dimensions) {
+  const width = dimensions.width || 1000
+  const height = dimensions.height || 1000
+  const aspect = box.w / Math.max(1, box.h)
+  const maxSide = Math.max(box.w, box.h)
+  const sizeLimit = Math.max(64, Math.min(180, width * 0.18, height * 0.14))
+  return !isEdgeLike(box) && aspect >= 0.48 && aspect <= 2.05 &&
+    Math.min(box.w, box.h) >= 6 && maxSide <= sizeLimit
+}
+
 function groupElements(group) {
   return (group.members || []).map((member) => member.element || '')
+}
+
+function pagePresenceKind(item) {
+  const elements = Array.isArray(item?.members)
+    ? groupElements(item)
+    : [item?.element || '']
+  const roles = new Set(elements.map((element) => {
+    if (element.includes('页面顶部或高度区域')) return 'top'
+    if (element.includes('页面底部或高度区域')) return 'bottom'
+    return null
+  }).filter(Boolean))
+
+  if (roles.size === 1) return [...roles][0]
+  return roles.size ? 'mixed' : null
+}
+
+function pagePresenceCompatible(a, b) {
+  const aKind = pagePresenceKind(a)
+  const bKind = pagePresenceKind(b)
+  if (!aKind && !bKind) return true
+  return Boolean(aKind && aKind === bKind)
 }
 
 function largeObjectRole(group, dimensions) {
@@ -92,7 +124,97 @@ function internalFragmentLike(group, large) {
     box.w <= largeBox.w * 0.45 && box.h <= largeBox.h * 0.45
 }
 
-function issueGroupMatch(a, b) {
+function axisOverlap(startA, lengthA, startB, lengthB) {
+  return Math.max(
+    0,
+    Math.min(startA + lengthA, startB + lengthB) - Math.max(startA, startB),
+  )
+}
+
+function axisGap(startA, lengthA, startB, lengthB) {
+  return Math.max(
+    0,
+    Math.max(startA, startB) - Math.min(startA + lengthA, startB + lengthB),
+  )
+}
+
+function pagePresenceFragmentMatch(a, b, dimensions) {
+  const kind = pagePresenceKind(a)
+  if (!kind || kind !== pagePresenceKind(b) || kind === 'mixed') return false
+
+  const aBox = a.box
+  const bBox = b.box
+  const width = dimensions.width || 1000
+  const height = dimensions.height || 1000
+  const horizontalOverlap = axisOverlap(aBox.x, aBox.w, bBox.x, bBox.w) /
+    Math.max(1, Math.min(aBox.w, bBox.w))
+  const verticalOverlap = axisOverlap(aBox.y, aBox.h, bBox.y, bBox.h) /
+    Math.max(1, Math.min(aBox.h, bBox.h))
+  const horizontalGap = axisGap(aBox.x, aBox.w, bBox.x, bBox.w)
+  const verticalGap = axisGap(aBox.y, aBox.h, bBox.y, bBox.h)
+  const horizontalBand = verticalOverlap >= 0.55 &&
+    horizontalGap <= Math.max(8, width * 0.012)
+  const verticalBand = horizontalOverlap >= 0.55 &&
+    verticalGap <= Math.max(8, height * 0.004)
+
+  return boxIntersection(aBox, bBox) > 0 || horizontalBand || verticalBand
+}
+
+// Multi-scale raster passes can split one compact control into separate pieces:
+// for example the upper half of a circular button may be labelled as a size
+// difference while its lower rim becomes a border difference. These pieces do
+// not overlap enough for ordinary IoU grouping, but their shared axis and tiny
+// seam make them much more likely to be one object than two adjacent controls.
+function compactComponentFragmentMatch(a, b, dimensions) {
+  if (groupTextLike(a) || groupTextLike(b)) return false
+  if (largeObjectRole(a, dimensions) || largeObjectRole(b, dimensions)) return false
+
+  const types = new Set([...(a.types || []), ...(b.types || [])])
+  if (![...types].some((type) => COMPONENT_DETAIL_TYPES.has(type))) return false
+
+  const aBox = a.box
+  const bBox = b.box
+  const combined = unionBox([aBox, bBox])
+  if (!isCompactComponentShape(combined, dimensions)) return false
+
+  const overlap = boxIntersection(aBox, bBox)
+  const minArea = Math.min(aBox.w * aBox.h, bBox.w * bBox.h)
+  const inside = overlap / Math.max(1, minArea)
+  const centerDeltaX = Math.abs(
+    aBox.x + aBox.w / 2 - (bBox.x + bBox.w / 2),
+  )
+  const centerDeltaY = Math.abs(
+    aBox.y + aBox.h / 2 - (bBox.y + bBox.h / 2),
+  )
+  const concentric = inside >= 0.42 &&
+    centerDeltaX <= Math.max(8, combined.w * 0.2) &&
+    centerDeltaY <= Math.max(8, combined.h * 0.2)
+
+  const horizontalOverlap = axisOverlap(aBox.x, aBox.w, bBox.x, bBox.w) /
+    Math.max(1, Math.min(aBox.w, bBox.w))
+  const verticalOverlap = axisOverlap(aBox.y, aBox.h, bBox.y, bBox.h) /
+    Math.max(1, Math.min(aBox.h, bBox.h))
+  const horizontalGap = axisGap(aBox.x, aBox.w, bBox.x, bBox.w)
+  const verticalGap = axisGap(aBox.y, aBox.h, bBox.y, bBox.h)
+  const seamLimit = Math.max(4, Math.min(combined.w, combined.h) * 0.08)
+  const stackedPieces = horizontalOverlap >= 0.65 &&
+    centerDeltaX <= Math.max(6, Math.min(aBox.w, bBox.w) * 0.12) &&
+    verticalGap <= seamLimit
+  const sidePieces = verticalOverlap >= 0.65 &&
+    centerDeltaY <= Math.max(6, Math.min(aBox.h, bBox.h) * 0.12) &&
+    horizontalGap <= seamLimit
+
+  return concentric || stackedPieces || sidePieces
+}
+
+function issueGroupMatch(aIssue, bIssue, dimensions) {
+  if (!pagePresenceCompatible(aIssue, bIssue)) return false
+  if (pagePresenceKind(aIssue)) {
+    return pagePresenceFragmentMatch(aIssue, bIssue, dimensions)
+  }
+
+  const a = aIssue.box
+  const b = bIssue.box
   const intersection = boxIntersection(a, b)
   const aArea = a.w * a.h
   const bArea = b.w * b.h
@@ -153,7 +275,61 @@ function inlineFragmentMatch(a, b, dimensions) {
     gap <= maxGap && combined.w < width * 0.55
 }
 
+function neutralGeometryFragmentType(group) {
+  const types = [...new Set(group.types || [])]
+  if (types.length !== 1 || !['尺寸', '位置'].includes(types[0])) return null
+  const members = group.members || []
+  if (!members.length || members.some((member) =>
+    member.element !== '可见元素轮廓' || member.reviewOnly === true,
+  )) return null
+  return types[0]
+}
+
+// A word can be split into one geometry region per glyph cluster when the
+// raster pass cannot prove that it is text. Join only near-touching horizontal
+// fragments with the same objective geometry signal. Explicit controls keep
+// their own semantic element name and therefore never enter this fallback.
+function neutralInlineGeometryMatch(a, b, dimensions) {
+  const aType = neutralGeometryFragmentType(a)
+  const bType = neutralGeometryFragmentType(b)
+  if (!aType || aType !== bType) return false
+
+  const width = dimensions.width || 1000
+  const aBox = a.box
+  const bBox = b.box
+  const minHeight = Math.min(aBox.h, bBox.h)
+  const maxHeight = Math.max(aBox.h, bBox.h)
+  const heightRatio = maxHeight / Math.max(1, minHeight)
+  const verticalOverlap = axisOverlap(aBox.y, aBox.h, bBox.y, bBox.h) /
+    Math.max(1, minHeight)
+  const centerDeltaY = Math.abs(
+    aBox.y + aBox.h / 2 - (bBox.y + bBox.h / 2),
+  )
+  const left = aBox.x <= bBox.x ? aBox : bBox
+  const right = aBox.x <= bBox.x ? bBox : aBox
+  const gap = Math.max(0, right.x - (left.x + left.w))
+  const centerDeltaX = Math.abs(
+    aBox.x + aBox.w / 2 - (bBox.x + bBox.w / 2),
+  )
+  const combined = unionBox([aBox, bBox])
+  const gapLimit = Math.max(
+    3,
+    Math.min(22, width * 0.012, minHeight * 0.16),
+  )
+  const integerRoundingSlack = 1
+  const horizontalFragments = aBox.w >= aBox.h * 1.5 &&
+    bBox.w >= bBox.h * 1.5
+  const sequential = centerDeltaX >= (aBox.w + bBox.w) * 0.34
+
+  return horizontalFragments && sequential && heightRatio <= 1.3 &&
+    verticalOverlap >= 0.78 && centerDeltaY <= minHeight * 0.1 &&
+    gap <= gapLimit + integerRoundingSlack && combined.w <= width * 0.62
+}
+
 function rowGroupMatch(a, b, dimensions) {
+  if (!pagePresenceCompatible(a, b)) return false
+  if (pagePresenceKind(a)) return pagePresenceFragmentMatch(a, b, dimensions)
+
   const width = dimensions.width || 1000
   const height = dimensions.height || 1000
   const aBox = a.box
@@ -177,11 +353,15 @@ function rowGroupMatch(a, b, dimensions) {
     ? Math.max(18, Math.min(120, Math.min(aBox.h, bBox.h) * 2.3))
     : Math.max(10, Math.min(48, Math.min(aBox.h, bBox.h) * 1.05))
 
-  return inlineFragmentMatch(a, b, dimensions) ||
+  return neutralInlineGeometryMatch(a, b, dimensions) ||
+    inlineFragmentMatch(a, b, dimensions) ||
     (compactHeight && sameRow && gap <= maxGap && combined.w < width * 0.9 && textPair)
 }
 
 function finalGroupMatch(a, b, dimensions) {
+  if (!pagePresenceCompatible(a, b)) return false
+  if (pagePresenceKind(a)) return pagePresenceFragmentMatch(a, b, dimensions)
+
   const aArea = a.box.w * a.box.h
   const bArea = b.box.w * b.box.h
   const large = aArea >= bArea ? a : b
@@ -213,7 +393,8 @@ function finalGroupMatch(a, b, dimensions) {
   const tinyNearText = textParent && !smallIsGraphic && tiny && verticalNear &&
     gap <= Math.max(24, largeBox.h * 0.8)
 
-  return rowGroupMatch(a, b, dimensions) ||
+  return compactComponentFragmentMatch(a, b, dimensions) ||
+    rowGroupMatch(a, b, dimensions) ||
     (textParent && !smallIsGraphic && centerInside && inside > 0.48 && ratio < 55) ||
     tinyNearText || nestedFragment
 }
@@ -292,7 +473,11 @@ export function groupDisplayName(group, dimensions = {}) {
   )
   const objectRole = largeObjectRole(group, dimensions)
   const hasGraphic = groupHasGraphicEvidence(group)
+  const hasComponentDetail = group.types.some((type) =>
+    COMPONENT_DETAIL_TYPES.has(type),
+  )
   const compactGraphic = isCompactGraphicShape(group.box, dimensions)
+  const compactComponent = isCompactComponentShape(group.box, dimensions)
   const elements = groupElements(group)
   const pagePresence = elements.find((element) =>
     element.includes('页面底部或高度区域') ||
@@ -316,6 +501,7 @@ export function groupDisplayName(group, dimensions = {}) {
   if (hasText && aspect > 1.55 && group.box.h < 140) return '文字内容'
   if (hasText) return '文字区域'
   if (compactGraphic && hasGraphic) return '图标或图形'
+  if (compactComponent && hasComponentDetail) return '组件区域'
   if (compactGraphic) return '局部视觉差异'
   if (segments.length > 1) return '组合视觉区域'
   if (group.types.includes('边框')) return '边界差异'
@@ -332,7 +518,7 @@ export function groupIssues(issues, dimensions = {}) {
 
   for (const issue of orderedIssues) {
     const group = spatial.find((candidate) =>
-      candidate.members.some((member) => issueGroupMatch(member.box, issue.box)),
+      candidate.members.some((member) => issueGroupMatch(member, issue, dimensions)),
     )
     if (group) group.members.push(issue)
     else spatial.push({ members: [issue] })

@@ -234,7 +234,7 @@ export async function analyzeImages({
     height,
     outputWidth: analysisRect.width,
     outputHeight: analysisRect.height,
-    profile: analysisProfile,
+    profile: { ...analysisProfile, comparability },
     signal,
     onProgress,
   })

@@ -31,6 +31,7 @@ test('side-by-side mode uses one shared scroll container', () => {
 test('findings list exposes a real collapse control and collapsed grid row', () => {
   assert.match(rule('.center-column.is-findings-collapsed'), /52px/)
   assert.match(rule('.findings-panel.is-collapsed'), /grid-template-rows:\s*52px/)
+  assert.match(rule('.findings-table-content[hidden]'), /display:\s*none/)
   assert.match(prototype, /aria-expanded={!collapsed}/)
   assert.match(prototype, /onToggleCollapsed/)
 })
@@ -62,4 +63,7 @@ test('element alignment is a confirmed two-step selection workflow', () => {
   assert.match(css, /anchor-selection-box--rough/)
   assert.match(css, /anchor-selection-box--detected/)
   assert.match(prototype, /只比较重叠区域/)
+  assert.match(prototype, /const previewFindings = workflowActive \? \[\] : findings/)
+  assert.match(prototype, /alignment: anchorWorkflowActive \? "top-left" : profile\?\.alignment/)
+  assert.match(prototype, /select:\$\{anchorWorkflowActive\}/)
 })

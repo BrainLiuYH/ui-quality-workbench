@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { adaptYangaoGroups, isActionableGroup } from '../src/lib/findingsAdapter.js'
+import { groupIssues } from '../src/engine/group-issues.js'
 
 function group({
   id = 'group-1',
@@ -85,4 +86,40 @@ test('review-only engine observations never create list rows or canvas annotatio
 
   assert.equal(isActionableGroup(candidate, { width: 1500, height: 3333 }), false)
   assert.deepEqual(adaptYangaoGroups([candidate], { width: 1500, height: 3333 }), [])
+})
+
+test('one compact visual object with several signals produces one plain-language finding', () => {
+  const groups = groupIssues([
+    {
+      id: 'size-half',
+      type: '尺寸',
+      element: '可见元素轮廓',
+      box: { x: 440, y: 140, w: 120, h: 55 },
+      severity: '严重',
+      score: 78,
+    },
+    {
+      id: 'border-half',
+      type: '边框',
+      element: '组件边界',
+      box: { x: 438, y: 191, w: 124, h: 61 },
+      severity: '中等',
+      score: 66,
+    },
+    {
+      id: 'color-center',
+      type: '颜色',
+      element: '界面元素',
+      box: { x: 458, y: 164, w: 84, h: 70 },
+      severity: '中等',
+      score: 52,
+    },
+  ], { width: 1000, height: 1000 })
+
+  const findings = adaptYangaoGroups(groups, { width: 1000, height: 1000 })
+
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0].title, '这个区域大小不一致')
+  assert.equal(findings[0].summary, '实现图这个区域的大小和设计稿不同。')
+  assert.deepEqual(new Set(findings[0].types), new Set(['尺寸', '边框', '颜色']))
 })

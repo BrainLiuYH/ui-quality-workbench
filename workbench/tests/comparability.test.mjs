@@ -89,6 +89,84 @@ const sameLayoutWithDifferentMediaTexture = (width, height, variant) => createRa
   },
 )
 
+const mobileFeedWithDifferentMedia = (width, height, variant) => createRaster(
+  width,
+  height,
+  (x, y) => {
+    const design = variant === 'design'
+    const sourceHeight = design ? height - 11 : height
+    const dark = [15, 16, 17, 255]
+    const light = [240, 240, 240, 255]
+
+    if (y >= sourceHeight) return [0, 0, 0, 0]
+
+    // Different mobile system bars are ignored by the supplied profile.
+    if (y < 18) {
+      const statusMark = design ? x > 10 && x < 45 : x > 115 && x < 172
+      return statusMark && y > 5 && y < 12 ? light : dark
+    }
+
+    // Same semantic header, centered action, section title and utility pill.
+    // The inner strokes mimic platform-font rendering differences while all
+    // component bounds stay fixed.
+    const textAndControls = [
+      [10, 32, 72, 12],
+      [121, 31, 50, 20],
+      [82, 58, 18, 20],
+      [54, 82, 72, 13],
+      [34, 101, 112, 10],
+      [10, 123, 55, 12],
+      [140, 124, 28, 9],
+    ]
+    for (const [left, top, blockWidth, blockHeight] of textAndControls) {
+      if (x < left || x >= left + blockWidth || y < top || y >= top + blockHeight) {
+        continue
+      }
+      const localX = x - left
+      const localY = y - top
+      const visibleStroke = design
+        ? Math.floor(localX / 4) % 2 === 0
+        : Math.floor(localY / 3) % 2 === 0
+      return visibleStroke ? light : dark
+    }
+
+    // Three cards keep identical outer geometry. Their photos and fake copy
+    // are deliberately unrelated, producing disconnected high-texture bands
+    // much like a feed populated from different mock data.
+    for (const top of [150, 240, 330]) {
+      const inside = x >= 10 && x < 171 && y >= top && y < top + 66
+      if (!inside) continue
+      if (x < 12 || x >= 169 || y < top + 2 || y >= top + 64) {
+        return [100, 100, 100, 255]
+      }
+      const localX = x - 12
+      const localY = y - top - 2
+      if (localY > 47 && localY < 57 && localX > 8 &&
+        localX < (design ? 88 : 62)) {
+        return localY < 52 ? light : [221, 177, 74, 255]
+      }
+      if (design) {
+        return Math.floor(localX / 15) % 2
+          ? [250, 250, 250, 255]
+          : [5, 10, 16, 255]
+      }
+      return Math.floor(localY / 9) % 2
+        ? [245, 40, 20, 255]
+        : [5, 210, 80, 255]
+    }
+
+    // Same bottom navigation is anchored to each source image's own bottom.
+    const navigationTop = sourceHeight - 48
+    if (y >= navigationTop && y < sourceHeight - 5 && x >= 8 && x < 172) {
+      const border = x < 11 || x >= 169 || y < navigationTop + 2 ||
+        y >= sourceHeight - 8
+      return border ? [113, 92, 55, 255] : [39, 34, 29, 255]
+    }
+
+    return dark
+  },
+)
+
 test('identical rasters are highly comparable', () => {
   const width = 96
   const height = 120
@@ -231,6 +309,36 @@ test('same card geometry remains reviewable when media edge density changes', ()
   assert.ok(result.metrics.changedRowRatio > 0.6)
   assert.ok(result.metrics.changedColumnRatio > 0.6)
   assert.ok(result.metrics.coarseLayoutSimilarity >= 0.6)
+  assert.ok(result.reasons.some(({ code }) => code === 'WIDESPREAD_CONTENT_VARIATION'))
+  assert.ok(!result.reasons.some(({ level }) => level === 'blocking'))
+})
+
+test('top-aligned mobile feed with unrelated mock media remains reviewable', () => {
+  const width = 180
+  const height = 420
+  const result = assessComparability({
+    designPixels: mobileFeedWithDifferentMedia(width, height, 'design'),
+    implementationPixels: mobileFeedWithDifferentMedia(
+      width,
+      height,
+      'implementation',
+    ),
+    width,
+    height,
+    profile: {
+      alignment: 'top-left',
+      comparisonHeight: height,
+      ignoreTop: 18,
+      ignoreTopStart: 0,
+    },
+  })
+
+  assert.equal(result.status, 'medium')
+  assert.ok(result.metrics.oneSidedTransparentRatio > 0.025)
+  assert.ok(result.metrics.changedRowRatio > 0.6)
+  assert.ok(result.metrics.changedColumnRatio > 0.6)
+  assert.ok(result.metrics.coarseLayoutSimilarity < 0.6)
+  assert.ok(result.metrics.largestLayoutStructureComponentRatio < 0.2)
   assert.ok(result.reasons.some(({ code }) => code === 'WIDESPREAD_CONTENT_VARIATION'))
   assert.ok(!result.reasons.some(({ level }) => level === 'blocking'))
 })
