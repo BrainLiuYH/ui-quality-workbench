@@ -1,4 +1,4 @@
-# UI 质量工作台设计文档
+# 设计工具箱设计文档
 
 这组文档记录首版范围、Skill/Plugin 形态、扩展架构和统一问题模型，作为产品设计与实现的共同基线。其中架构和蓝图包含规划内容，不能单独作为当前功能清单；实际能力边界以根目录 README 与 Skill 文档为准。
 
@@ -10,7 +10,7 @@
 4. [Finding Schema](./finding.schema.json) 与 [FindingOccurrence Schema](./finding-occurrence.schema.json)：Draft 2020-12 实现起点，仍需迁移、兼容性和运行时校验测试。
 5. [Finding 示例](./example.finding.json) 与 [Occurrence 示例](./example.finding-occurrence.json)：一条已确认的 UI 间距问题。
 
-## 当前 V0 决策
+## 首版 V0 决策（历史范围）
 
 - 工作台首版只显示“UI 一致性走查”一个模块；
 - Core 使用设计图片 + 实现截图；具体 Figma Frame 导入作为 Beta，失败时必须回退图片上传；
@@ -22,6 +22,8 @@
 
 ## 当前已实现现状
 
+- 平台名为“设计工具箱”，同时提供 UI 走查与工具分享；现有仓库地址和 `ui-quality-workbench` Skill 标识保持兼容。
+- 工具分享首批收录 Cowart 与移动端低保真原型工作流，支持卡片详情和可复制的“一键安装”提示词。
 - 已实现本地图片选择与拖拽、Figma PAT 单节点图片导入、宽度等比归一化、输入可比性门槛、启发式差异候选、人工复核和清单导出。
 - 已实现开发 URL 自动截图，但能力限定为使用隔离 Chromium 系浏览器截取指定尺寸的**当前视口**；它不继承登录状态，不操作页面，也不滚动拼接全页。
 - 当前交付形态是可独立安装和运行的 Codex Skill；完整 Plugin、MCP/CLI 通用适配仍属于架构规划。

@@ -1,11 +1,13 @@
 ---
 name: ui-quality-workbench
-description: Launch and operate a local UI quality workbench for real design-versus-implementation screenshot comparison. Use when the user wants UI fidelity inspection from local images, a Figma frame imported with a personal access token, or an isolated Chromium viewport capture, followed by human review and export of heuristic difference candidates. This version is not a UX, accessibility, DOM, or computed-style audit.
+description: Launch Design Toolbox (设计工具箱), a local platform for UI screenshot inspection and a collection of useful tools and Skills. Use when the user wants to open the toolbox, browse shared tools and copy installation prompts, or compare design and implementation screenshots followed by human review and export of heuristic difference candidates. Screenshot sources include local images, a Figma frame imported with a personal access token, or an isolated Chromium viewport capture. This version is not a UX, accessibility, DOM, or computed-style audit.
 ---
 
-# UI Quality Workbench
+# 设计工具箱 · Design Toolbox
 
-Use this skill to run the local **UI 走查** module. It compares a design image with an implementation screenshot in a browser Worker, groups visible differences into review candidates, and supports human confirmation and export.
+Use this skill to open **设计工具箱**. The platform includes **UI 走查** and **工具分享**. Its installation identifier remains `ui-quality-workbench` so existing installs and launch commands keep working.
+
+The UI 走查 module compares a design image with an implementation screenshot in a browser Worker, groups visible differences into review candidates, and supports human confirmation and export.
 
 The analyzer is heuristic. Call its output **candidates** or **possible mismatches** until a person verifies the intended design, route, state, content, and viewport. Never present an unreviewed result as a confirmed defect.
 
@@ -31,7 +33,13 @@ The analyzer is heuristic. Call its output **candidates** or **possible mismatch
 
 If launch fails with `EPERM` or an explicit loopback-socket restriction, request local execution permission and retry the same command. Do not change the bind address, substitute a hosted copy, or upload local images elsewhere.
 
-## Choose sources
+## Browse shared tools
+
+Select **工具分享** in the left navigation to browse the collected tools and Skills. The initial entries are Cowart and `ui-wireframe-workflow`. Click a card for its introduction, or select **一键安装** to open a copyable installation prompt. Send that prompt to a compatible AI tool to perform installation; the browser itself only displays and copies the prompt.
+
+Cowart uses its public repository as the installation source. The wireframe Skill prompt includes all four required Markdown files, so recipients do not need access to the sharer's computer. Collection badges do not indicate whether a visitor has installed a tool.
+
+## Choose sources for UI inspection
 
 The workbench needs one design image and one implementation image. Each source change invalidates earlier results; run the audit again after replacing either source.
 
@@ -59,4 +67,4 @@ Read [references/audit-model.md](references/audit-model.md) when classifying, pr
 - Web capture is an isolated current-viewport screenshot. It is not full-page stitching, interactive browsing, login-state inheritance, DOM inspection, or computed-style extraction.
 - Local browser processing is not a security certification. Figma import necessarily sends the PAT to Figma and downloads the selected frame; webpage capture necessarily requests the supplied URL.
 - The comparability gate has no OCR, DOM, or product semantics. It can stop widely mismatched inputs and warn about localized changes, but it cannot prove that two screens represent the same route/state or identify the authoritative side.
-- UI 走查 is the implemented module. Do not claim that the planned interaction-experience, accessibility, or collaboration modules already run.
+- UI 走查 and 工具分享 are implemented. Do not claim that the planned interaction-experience, accessibility, or collaboration modules already run.

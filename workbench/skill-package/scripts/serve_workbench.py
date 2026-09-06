@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify and serve UI Quality Workbench with a loopback-only source bridge."""
+"""Verify and serve Design Toolbox with a loopback-only source bridge."""
 
 from __future__ import annotations
 
@@ -858,7 +858,7 @@ class WorkbenchHandler(http.server.BaseHTTPRequestHandler):
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Serve the bundled UI Quality Workbench locally.")
+    parser = argparse.ArgumentParser(description="Serve the bundled Design Toolbox (设计工具箱) locally.")
     parser.add_argument("--check", action="store_true", help="Verify the bundle and local bridge, then exit.")
     parser.add_argument("--port", type=int, default=0, help="Loopback port; 0 chooses an available port.")
     parser.add_argument("--verbose", action="store_true", help="Write HTTP access logs to stderr.")

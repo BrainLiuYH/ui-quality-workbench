@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ArrowRight,
   ArrowsLeftRight,
   Camera,
   CaretDown,
@@ -8,8 +9,10 @@ import {
   CheckCircle,
   ClockCounterClockwise,
   Columns,
+  Copy,
   CursorClick,
   DownloadSimple,
+  DeviceMobile,
   Eye,
   FileImage,
   FigmaLogo,
@@ -23,11 +26,15 @@ import {
   MagnifyingGlassPlus,
   PencilSimple,
   SidebarSimple,
+  Sparkle,
+  ShareNetwork,
   Trash,
   UploadSimple,
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
+import { sharedTools } from "./sharedTools.js";
+import { toolInstallPrompts } from "./toolInstallPrompts.js";
 import { adaptYangaoGroups } from "./lib/findingsAdapter.js";
 import { deriveAuditName } from "./lib/auditName.js";
 import { getComparisonPlacement, intersectCanvasCropWithPlacement } from "./lib/comparisonGeometry.js";
@@ -807,10 +814,160 @@ function DetailPanel({ finding, findings, implementationSource, comparisonProfil
 }
 
 function Dialog({ title, children, onClose, size = "medium" }) {
+  const dialogRef = useRef(null);
+  useEffect(() => {
+    const previousFocus = document.activeElement;
+    dialogRef.current?.querySelector("button:not(:disabled)")?.focus();
+    return () => { if (previousFocus?.isConnected) previousFocus.focus(); };
+  }, []);
+  const handleKeyDown = (event) => {
+    if (event.key === "Escape" && onClose) {
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+    }
+    if (event.key !== "Tab") return;
+    const controls = Array.from(dialogRef.current?.querySelectorAll('button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]') || [])
+      .filter((element) => element.getClientRects().length > 0);
+    if (!controls.length) { event.preventDefault(); dialogRef.current?.focus(); return; }
+    const first = controls[0];
+    const last = controls[controls.length - 1];
+    if (event.shiftKey && (document.activeElement === first || document.activeElement === dialogRef.current)) {
+      event.preventDefault(); last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault(); first.focus();
+    }
+  };
   return (
     <div className="dialog-backdrop" role="presentation" onMouseDown={onClose}>
-      <section className={`dialog dialog--${size}`} role="dialog" aria-modal="true" aria-label={title} onMouseDown={(event) => event.stopPropagation()}><header><strong>{title}</strong><button type="button" aria-label="关闭" onClick={onClose} disabled={!onClose}><X size={19} /></button></header>{children}</section>
+      <section ref={dialogRef} className={`dialog dialog--${size}`} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1} onKeyDown={handleKeyDown} onMouseDown={(event) => event.stopPropagation()}><header><strong>{title}</strong><button type="button" aria-label="关闭" onClick={onClose} disabled={!onClose}><X size={19} /></button></header>{children}</section>
     </div>
+  );
+}
+
+const sharedToolIcons = {
+  cowart: Sparkle,
+  "ui-wireframe-workflow": DeviceMobile,
+};
+
+function SharedToolCard({ tool, onOpen, onInstall }) {
+  const Icon = sharedToolIcons[tool.id] || Sparkle;
+  return (
+    <article className="shared-tool-card">
+      <button type="button" className="shared-tool-card__overview" onClick={() => onOpen(tool.id)} aria-label={`查看${tool.name}详情`}>
+      <span className="shared-tool-card__topline">
+        <span className="shared-tool-card__icon"><AppIcon icon={Icon} size={24} weight="duotone" /></span>
+        <span className="shared-tool-card__status">{tool.status}</span>
+      </span>
+      <span className="shared-tool-card__meta">{tool.category}<i aria-hidden="true" />{tool.typeLabel}</span>
+      <strong>{tool.name}</strong>
+      <span className="shared-tool-card__summary">{tool.summary}</span>
+      <span className="shared-tool-card__tags" aria-label="标签">
+        {tool.tags.map((tag) => <span key={tag}>{tag}</span>)}
+      </span>
+      </button>
+      <div className="shared-tool-card__actions">
+        <button type="button" className="shared-tool-card__action" onClick={() => onOpen(tool.id)}>查看介绍<AppIcon icon={ArrowRight} size={16} /></button>
+        <button type="button" className="primary-button" onClick={() => onInstall(tool.id)} aria-label={`一键安装${tool.name}`}><DownloadSimple size={16} />一键安装</button>
+      </div>
+    </article>
+  );
+}
+
+function ToolSharingPage({ tools, onOpen, onInstall }) {
+  return (
+    <main className="tool-sharing-workspace">
+      <div className="tool-sharing-content">
+        <header className="tool-sharing-header">
+          <div>
+            <span className="tool-sharing-eyebrow"><AppIcon icon={ShareNetwork} size={16} weight="fill" />工具分享</span>
+            <h1>值得收藏的工具与 Skill</h1>
+            <p>这里收集已经使用过、值得复用的 AI 工具和工作流。点击卡片，可以快速了解它能做什么、怎么使用，以及适用边界。</p>
+          </div>
+          <span className="tool-sharing-count"><strong>{tools.length}</strong> 个已收集</span>
+        </header>
+        <section className="tool-sharing-section" aria-labelledby="shared-tools-heading">
+          <div className="tool-sharing-section__heading">
+            <div><h2 id="shared-tools-heading">首批分享</h2><p>从实际工作中沉淀的可复用工具</p></div>
+          </div>
+          <div className="tool-card-grid">
+            {tools.map((tool) => <SharedToolCard key={tool.id} tool={tool} onOpen={onOpen} onInstall={onInstall} />)}
+          </div>
+        </section>
+      </div>
+    </main>
+  );
+}
+
+function ToolDetailDialog({ tool, onClose, onInstall }) {
+  if (!tool) return null;
+  const Icon = sharedToolIcons[tool.id] || Sparkle;
+  return (
+    <Dialog title="工具详情" onClose={onClose} size="large">
+      <div className="tool-detail">
+        <header className="tool-detail__hero">
+          <span className="tool-detail__icon"><AppIcon icon={Icon} size={28} weight="duotone" /></span>
+          <div><span>{tool.category} · {tool.typeLabel}</span><h2>{tool.name}</h2><p>{tool.description}</p></div>
+          <span className="tool-detail__status">{tool.status}</span>
+        </header>
+        <div className="tool-detail__body">
+          <section><h3>适合用在</h3><ul>{tool.useCases.map((item) => <li key={item}>{item}</li>)}</ul></section>
+          <section><h3>主要能力</h3><ul>{tool.capabilities.map((item) => <li key={item}>{item}</li>)}</ul></section>
+          <section className="tool-detail__workflow"><h3>怎么使用</h3><ol>{tool.workflow.map((item, index) => <li key={item}><span>{index + 1}</span><p>{item}</p></li>)}</ol></section>
+          <section><h3>可以得到</h3><ul>{tool.deliverables.map((item) => <li key={item}>{item}</li>)}</ul></section>
+          <section className="tool-detail__limitations"><h3>使用前要知道</h3><ul>{tool.limitations.map((item) => <li key={item}>{item}</li>)}</ul></section>
+        </div>
+      </div>
+      <footer className="dialog-actions"><button type="button" onClick={onClose}>关闭</button><button type="button" className="primary-button" onClick={() => onInstall(tool.id)}><DownloadSimple size={16} />一键安装</button></footer>
+    </Dialog>
+  );
+}
+
+function ToolInstallDialog({ tool, onClose, onBack }) {
+  const [copyState, setCopyState] = useState("idle");
+  const promptRef = useRef(null);
+  const installation = toolInstallPrompts[tool?.id];
+  if (!tool || !installation) return null;
+  const selectPrompt = () => {
+    promptRef.current?.focus();
+    promptRef.current?.select();
+  };
+  const copyPrompt = async () => {
+    if (copyState === "copying") return;
+    setCopyState("copying");
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable");
+      await navigator.clipboard.writeText(installation.prompt);
+      setCopyState("copied");
+    } catch {
+      selectPrompt();
+      try {
+        const copied = document.execCommand("copy");
+        setCopyState(copied ? "copied" : "manual");
+      } catch {
+        setCopyState("manual");
+      }
+    }
+  };
+  return (
+    <Dialog title={`一键安装 · ${tool.name}`} onClose={onClose} size="large">
+      <div className="tool-install">
+        <div className="tool-install__intro">
+          <span className="tool-detail__icon"><AppIcon icon={Copy} size={25} /></span>
+          <div><h2>复制提示词，交给 AI 安装</h2><p>复制下方内容，粘贴到 Codex 等 AI 工具中发送，按提示完成安装后即可使用。</p></div>
+        </div>
+        <p className="tool-install__compatibility"><Info size={16} aria-hidden="true" /><span>{installation.compatibility}</span></p>
+        <div className="tool-install__prompt">
+          <div className="tool-install__prompt-heading"><label htmlFor="tool-install-prompt">安装提示词</label><button type="button" onClick={selectPrompt}>全选</button></div>
+          <textarea ref={promptRef} id="tool-install-prompt" readOnly value={installation.prompt} spellCheck={false} aria-describedby="tool-install-feedback" />
+        </div>
+        <div className="tool-install__next"><strong>安装后怎么开始</strong><p>{installation.nextStep}</p></div>
+        <p id="tool-install-feedback" className={`tool-install__feedback tool-install__feedback--${copyState}`} role="status" aria-live="polite">
+          {copyState === "copied" ? "已复制完整提示词，去 AI 工具中粘贴并发送吧。" : copyState === "manual" ? "自动复制未成功，已为你全选。请按 ⌘C 或 Ctrl+C 复制。" : copyState === "copying" ? "正在复制…" : "点击复制会复制全部内容，包括下方未显示完的部分。"}
+        </p>
+      </div>
+      <footer className="dialog-actions"><button type="button" onClick={onBack}><CaretLeft size={15} />返回介绍</button><button type="button" className="primary-button" onClick={copyPrompt} disabled={copyState === "copying"}>{copyState === "copied" ? <CheckCircle size={17} /> : <Copy size={17} />}{copyState === "copied" ? "已复制 · 再次复制" : copyState === "copying" ? "正在复制…" : "复制安装提示词"}</button></footer>
+    </Dialog>
   );
 }
 
@@ -1064,6 +1221,7 @@ function ReasonDialog({ status, onClose, onSubmit }) {
 export function Prototype() {
   const query = new URLSearchParams(window.location.search);
   const qaMode = query.has("qa");
+  const [activeView, setActiveView] = useState("audit");
   const [findings, setFindings] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [mode, setMode] = useState("side");
@@ -1535,6 +1693,11 @@ export function Prototype() {
     }
   };
 
+  const openView = (view) => {
+    setActiveView(view);
+    setModal(null);
+  };
+
   const openSourcePicker = (role) => {
     if (runStatus === "running") return notify("请先取消当前走查，再更换输入", "error");
     if (anchorFlow.status !== "idle") return notify("请先完成或取消元素框选", "warning");
@@ -1543,15 +1706,21 @@ export function Prototype() {
 
   return (
     <div className={`app-shell ${qaMode ? "qa-mode" : ""}`}>
-      <header className="global-header"><button type="button" className="icon-button" aria-label="收起导航"><AppIcon icon={SidebarSimple} size={21} /></button><strong>UI 质量工作台</strong><span className="autosave-state"><Info size={15} weight="fill" /> V1 · 本地分析</span></header>
+      <header className="global-header"><button type="button" className="icon-button" aria-label="收起导航"><AppIcon icon={SidebarSimple} size={21} /></button><strong>设计工具箱</strong><span className="autosave-state"><Info size={15} weight="fill" /> V1 · 本地模式</span></header>
       <div className="app-body">
         <nav className="side-nav" aria-label="工作台导航">
-          <div className="nav-group"><button type="button"><AppIcon icon={House} />工作台</button><button type="button" className="is-active"><AppIcon icon={ListChecks} weight="fill" />UI 走查</button><button type="button" className="is-disabled" title="后续版本开放" aria-disabled="true"><AppIcon icon={CursorClick} />交互体验审查<span>稍后</span></button></div>
+          <div className="nav-group">
+            <button type="button" onClick={() => openView("audit")}><AppIcon icon={House} />工作台</button>
+            <button type="button" className={activeView === "audit" ? "is-active" : ""} aria-current={activeView === "audit" ? "page" : undefined} onClick={() => openView("audit")}><AppIcon icon={ListChecks} weight={activeView === "audit" ? "fill" : "regular"} />UI 走查</button>
+            <button type="button" className={activeView === "tools" ? "is-active" : ""} aria-current={activeView === "tools" ? "page" : undefined} onClick={() => openView("tools")}><AppIcon icon={ShareNetwork} weight={activeView === "tools" ? "fill" : "regular"} />工具分享</button>
+            <button type="button" className="is-disabled" title="后续版本开放" aria-disabled="true"><AppIcon icon={CursorClick} />交互体验审查<span>稍后</span></button>
+          </div>
           <div className="nav-divider" />
           <div className="nav-section-title"><span><AppIcon icon={ClockCounterClockwise} />历史记录</span><CaretDown size={14} /></div>
-          <button type="button" className="history-item is-active" title={auditName}><span className="history-dot" /><span className="history-item-label">{auditName}</span></button>
+          <button type="button" className={`history-item ${activeView === "audit" ? "is-active" : ""}`} title={auditName} onClick={() => openView("audit")}><span className="history-dot" /><span className="history-item-label">{auditName}</span></button>
           <div className="sidebar-footer"><Info size={15} /><span>V1 · 本地模式</span></div>
         </nav>
+        {activeView === "tools" ? <ToolSharingPage tools={sharedTools} onOpen={(toolId) => setModal({ type: "tool-detail", toolId })} onInstall={(toolId) => setModal({ type: "tool-install", toolId })} /> : (
         <main className="workspace">
           <header className="workspace-toolbar">
             <div className="audit-title">{editingTitle ? <input autoFocus value={auditNameDraft} onChange={(event) => setAuditNameDraft(event.target.value)} onBlur={() => finishTitleEditing(true)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); finishTitleEditing(true); } else if (event.key === "Escape") { event.preventDefault(); finishTitleEditing(false); } }} aria-label="走查名称" /> : <strong title={auditName}>{auditName}</strong>}<button type="button" aria-label="编辑走查名称" onClick={beginTitleEditing}><AppIcon icon={PencilSimple} size={16} /></button></div>
@@ -1569,6 +1738,7 @@ export function Prototype() {
             {hasAuditResults && selectedFinding ? <DetailPanel finding={selectedFinding} findings={displayedFindings} implementationSource={sources.implementation} comparisonProfile={profile} onSelect={setSelectedId} onChange={updateSelected} onRequestStatus={requestStatus} onExport={() => setModal({ type: "export" })} exportDisabled={false} /> : <DetailEmptyPanel runStatus={runStatus} hasInputs={hasInputs} auditMeta={auditMeta} filtered={hasAuditResults && !selectedFinding} />}
           </div>
         </main>
+        )}
       </div>
       {toast && <div className={`toast toast--${toast.tone}`} role={toast.tone === "error" ? "alert" : "status"} aria-live={toast.tone === "error" ? "assertive" : "polite"}>{["error", "warning"].includes(toast.tone) ? <WarningCircle size={17} weight="fill" /> : <CheckCircle size={17} weight="fill" />}{toast.message}</div>}
       {modal?.type === "export" && hasAuditResults && <ExportDialog auditName={auditName} findings={findings} sources={sources} profile={profile} onClose={() => setModal(null)} onToast={notify} />}
@@ -1576,6 +1746,8 @@ export function Prototype() {
       {modal?.type === "figma" && <FigmaDialog capabilities={capabilities} onClose={() => setModal(null)} onFallback={() => setModal({ type: "upload", preferredRole: "design" })} onImport={importFromFigma} />}
       {modal?.type === "capture" && <WebCaptureDialog capabilities={capabilities} onClose={() => setModal(null)} onFallback={() => setModal({ type: "upload", preferredRole: "implementation" })} onCapture={captureFromWeb} />}
       {modal?.type === "reason" && <ReasonDialog status={modal.status} onClose={() => setModal(null)} onSubmit={(reason) => { updateSelected({ status: modal.status, note: reason }); setModal(null); }} />}
+      {modal?.type === "tool-detail" && <ToolDetailDialog key={modal.toolId} tool={sharedTools.find((tool) => tool.id === modal.toolId)} onClose={() => setModal(null)} onInstall={(toolId) => setModal({ type: "tool-install", toolId })} />}
+      {modal?.type === "tool-install" && <ToolInstallDialog key={modal.toolId} tool={sharedTools.find((tool) => tool.id === modal.toolId)} onClose={() => setModal(null)} onBack={() => setModal({ type: "tool-detail", toolId: modal.toolId })} />}
       <span className="sr-only" aria-live="polite">{sources.design ? `设计稿 ${sources.design.name}` : "尚无设计稿"}；{sources.implementation ? `实现稿 ${sources.implementation.name}` : "尚无实现稿"}</span>
     </div>
   );

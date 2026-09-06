@@ -6,6 +6,7 @@ Before making substantial visual changes, use the Product Design plugin's `get-c
 
 ## Confirmed visual direction
 
+- The platform's user-facing name is “设计工具箱” (Design Toolbox), covering UI inspection and the collection of useful tools and Skills. Keep the existing `ui-quality-workbench` repository, Skill identifier, and storage keys for compatibility; use the platform name in the header, browser title, installation display metadata, and current documentation.
 - The user selected the third ideation option on 2026-08-26.
 - Preserve its audit-session workbench structure: compact left navigation, comparison evidence above a findings table, and a persistent right-side decision inspector.
 - On 2026-08-26 the user approved the refined Fluent + Ant direction shown in `../design-previews/selected-fluent-ant-direction.png`; this supersedes the earlier grayscale-only styling.
@@ -23,6 +24,8 @@ Before making substantial visual changes, use the Product Design plugin's `get-c
 - Default findings copy must use short, plain Chinese: describe what looks different, its approximate page area, and the visible reason. Keep coordinates, pixel heuristics, edge density, confidence signals, and other engine terms out of the default list and detail panel; retain them only as hidden technical metadata.
 - Treat one-sided transparent pixels as a single region-presence/layout candidate. Transparent RGB bytes are not black content and must not generate color, text, icon, border, shadow, or size claims.
 - Require positive raster evidence before assigning text, icon, or media roles. Use neutral names for ambiguous or slender fragments, keep localized media/content changes separate from UI geometry claims, and prefer one primary objective classification per visual object over several contradictory types.
+- Keep a first-class “工具分享” entry in the left navigation. It is a curated collection of useful tools and Skills, not another audit mode: show the collection as clickable cards, open a plain-language detail dialog from each card, and preserve all UI-audit state when switching between the two views. The first confirmed entries are Cowart (label it accurately as a tool plugin containing multiple Skills) and the `ui-wireframe-workflow` mobile low-fidelity prototyping Skill.
+- Each shared tool must offer “一键安装” on its card and detail dialog. This opens a copyable installation prompt with clear instructions to paste and send it to an AI tool that supports the required installation. Prompts must be portable: use a verified public source or include all required Skill files, never a sharer's local address or a fabricated download link. Show truthful copy success or a manual-copy fallback, and label collection status independently of the visitor's installation status.
 
 When implementing from a selected generated mock, treat that image as the source of truth for layout, component anatomy, density, spacing, color, typography, visible content, and hierarchy.
 
