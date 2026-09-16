@@ -207,8 +207,34 @@ function compactComponentFragmentMatch(a, b, dimensions) {
   return concentric || stackedPieces || sidePieces
 }
 
+function oppositeCornersOfWideControl(a, b, dimensions) {
+  if (a.type !== '圆角' || b.type !== '圆角' ||
+    a.element !== '组件角部' || b.element !== '组件角部') return false
+  const width = dimensions.width || 1000
+  const height = dimensions.height || 1000
+  const left = a.box.x < b.box.x ? a.box : b.box
+  const right = a.box.x < b.box.x ? b.box : a.box
+  const union = unionBox([left, right])
+  const overlapY = axisOverlap(left.y, left.h, right.y, right.h) /
+    Math.max(1, Math.min(left.h, right.h))
+  return left.x <= width * 0.17 && right.x + right.w >= width * 0.83 &&
+    union.w >= width * 0.6 && union.h <= Math.max(48, height * 0.12) &&
+    overlapY >= 0.75 &&
+    Math.max(left.h, right.h) / Math.max(1, Math.min(left.h, right.h)) <= 1.5
+}
+
 function issueGroupMatch(aIssue, bIssue, dimensions) {
+  // Explicit component observations have their own precisely measured box.
+  // A broad media/layout fragment can otherwise swallow a bottom-nav control
+  // and turn its actionable result back into a page-sized annotation.
+  if (aIssue.componentEvidence || bIssue.componentEvidence ||
+    aIssue.backgroundEvidence || bIssue.backgroundEvidence) {
+    return Boolean(aIssue.componentEvidence && bIssue.componentEvidence &&
+      aIssue.element === bIssue.element) ||
+      Boolean(aIssue.backgroundEvidence && bIssue.backgroundEvidence)
+  }
   if (!pagePresenceCompatible(aIssue, bIssue)) return false
+  if (oppositeCornersOfWideControl(aIssue, bIssue, dimensions)) return true
   if (pagePresenceKind(aIssue)) {
     return pagePresenceFragmentMatch(aIssue, bIssue, dimensions)
   }
@@ -327,6 +353,8 @@ function neutralInlineGeometryMatch(a, b, dimensions) {
 }
 
 function rowGroupMatch(a, b, dimensions) {
+  if (a.members?.some((member) => member.componentEvidence || member.backgroundEvidence) ||
+    b.members?.some((member) => member.componentEvidence || member.backgroundEvidence)) return false
   if (!pagePresenceCompatible(a, b)) return false
   if (pagePresenceKind(a)) return pagePresenceFragmentMatch(a, b, dimensions)
 
@@ -359,6 +387,8 @@ function rowGroupMatch(a, b, dimensions) {
 }
 
 function finalGroupMatch(a, b, dimensions) {
+  if (a.members?.some((member) => member.componentEvidence || member.backgroundEvidence) ||
+    b.members?.some((member) => member.componentEvidence || member.backgroundEvidence)) return false
   if (!pagePresenceCompatible(a, b)) return false
   if (pagePresenceKind(a)) return pagePresenceFragmentMatch(a, b, dimensions)
 
@@ -488,6 +518,10 @@ export function groupDisplayName(group, dimensions = {}) {
 
   if (pagePresence) return pagePresence
   if (regionPresence) return '区域内容'
+  if (group.members.length > 1 && group.types.length === 1 &&
+    group.types[0] === '圆角' && elements.every((element) => element === '组件角部')) {
+    return '组件外轮廓'
+  }
   if (objectRole === 'media') return '图像区域'
   if (objectRole === 'container') return '容器区域'
   if (objectRole === 'large') return '大面积视觉区域'

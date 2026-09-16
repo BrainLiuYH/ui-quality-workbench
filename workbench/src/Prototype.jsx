@@ -36,6 +36,7 @@ import {
 import { sharedTools } from "./sharedTools.js";
 import { toolInstallPrompts } from "./toolInstallPrompts.js";
 import { adaptYangaoGroups } from "./lib/findingsAdapter.js";
+import { FINDING_CATEGORIES, FINDING_CATEGORY_LABELS } from "./lib/findingCategories.js";
 import { deriveAuditName } from "./lib/auditName.js";
 import { getComparisonPlacement, intersectCanvasCropWithPlacement } from "./lib/comparisonGeometry.js";
 import { resolveComparisonPolicy } from "./lib/comparisonPolicy.js";
@@ -43,6 +44,7 @@ import { recognizeElementAnchor } from "./lib/elementAnchorDetection.js";
 import { captureWebPage, getLocalCapabilities, importFigmaFrame } from "./lib/localBridge.js";
 import { createImageSource, deriveComparisonProfile, disposeImageSource, selectSingleImageFile, validateImageFile } from "./lib/imageSources.js";
 import { analyzeImagesInWorker } from "./engine/yangaoWorkerClient.js";
+import { suggestScaleMode } from "./engine/profile.js";
 
 const statusMeta = {
   pending: { label: "待确认", tone: "neutral" },
@@ -76,6 +78,11 @@ function AppIcon({ icon: Icon, size = 18, weight = "regular" }) {
 function StatusBadge({ status }) {
   const meta = statusMeta[status] ?? statusMeta.pending;
   return <span className={`status-badge status-badge--${meta.tone}`}>{meta.label}</span>;
+}
+
+function CategoryBadge({ category }) {
+  const resolved = FINDING_CATEGORY_LABELS[category] ? category : 'content';
+  return <span className={`category-badge category-badge--${resolved}`}>{FINDING_CATEGORY_LABELS[resolved]}</span>;
 }
 
 function useImageFileDrop({ onFile, onError, disabled = false }) {
@@ -452,13 +459,13 @@ function VerticalAlignmentSwitch({ value, onChange, disabled }) {
   );
 }
 
-function ComparisonCanvas({ mode, sources, zoom, findings, selectedId, onSelect, onUpload, onRemove, onDropFile, onDropError, profile, auditMeta, sourceActionsDisabled, focusRequest, alignment, onAlignmentChange, anchorFlow, anchors, onBeginElementAlignment, onAnchorSelect, onAnchorInvalid, onApplyElementAlignment, onResetElementAlignment, onCancelElementAlignment, onClearElementAlignment }) {
+function ComparisonCanvas({ mode, sources, zoom, findings, selectedId, onSelect, onUpload, onRemove, onDropFile, onDropError, profile, auditMeta, sourceActionsDisabled, focusRequest, alignment, onAlignmentChange, scaleMode, onScaleModeChange, anchorFlow, anchors, onBeginElementAlignment, onAnchorSelect, onAnchorInvalid, onApplyElementAlignment, onResetElementAlignment, onCancelElementAlignment, onClearElementAlignment }) {
   const [overlayOpacity, setOverlayOpacity] = useState(50);
   const design = sources.design;
   const implementation = sources.implementation;
 
-  const normalizedSourceLabel = (source, normalizedHeight, scale) => {
-    const normalizedSize = `${profile.targetWidth}×${normalizedHeight}`;
+  const normalizedSourceLabel = (source, normalizedWidth, normalizedHeight, scale) => {
+    const normalizedSize = `${normalizedWidth}×${normalizedHeight}`;
     if (scale === 1) return `${source.width}×${source.height}（原尺寸）`;
     return `${source.width}×${source.height} → ${normalizedSize}（${scale.toFixed(2)}×）`;
   };
@@ -502,9 +509,9 @@ function ComparisonCanvas({ mode, sources, zoom, findings, selectedId, onSelect,
     ? `实现稿平移 ${profile.anchorDelta.x >= 0 ? "右" : "左"}${Math.abs(profile.anchorDelta.x)}px、${profile.anchorDelta.y >= 0 ? "下" : "上"}${Math.abs(profile.anchorDelta.y)}px`
     : "已按对应元素对齐";
   const alignmentBanner = design && implementation && (
-    <div className={`alignment-banner ${profile.exceedsSafetyLimit || comparisonNeedsAttention ? "is-warning" : ""} ${workflowActive ? "is-selecting" : ""}`} aria-busy={anchorFlow?.status?.startsWith("detecting-") || undefined}>
-      <span id="element-alignment-instructions" role={workflowActive ? "status" : undefined} aria-live={workflowActive ? "polite" : undefined} title={workflowActive ? workflowCopy : comparability?.reasons?.[0] || `以较宽图片为目标宽度，仅等比放大较窄图片；两图按当前锚点对齐`}>
-        {workflowActive ? workflowCopy : `${profile.label} · 目标宽度 ${profile.targetWidth}px · 设计稿 ${normalizedSourceLabel(design, profile.designNormalizedHeight, profile.designScale)} · 实现稿 ${normalizedSourceLabel(implementation, profile.implementationNormalizedHeight, profile.implementationScale)}`}
+    <div className={`alignment-banner ${profile.exceedsSafetyLimit || comparisonNeedsAttention || profile.mode === "responsive" ? "is-warning" : ""} ${workflowActive ? "is-selecting" : ""}`} aria-busy={anchorFlow?.status?.startsWith("detecting-") || undefined}>
+      <span id="element-alignment-instructions" role={workflowActive ? "status" : undefined} aria-live={workflowActive ? "polite" : undefined} title={workflowActive ? workflowCopy : comparability?.reasons?.[0] || (profile.mode === "responsive" ? "按两张图使用相同像素密度处理；仅凭图片尺寸不能证明这一前提，请确认设备与导出倍率" : "将较窄图片等比放大到相同宽度；请确认两张图只是导出倍率不同")}>
+        {workflowActive ? workflowCopy : `${profile.label} · 设计稿 ${normalizedSourceLabel(design, profile.designNormalizedWidth, profile.designNormalizedHeight, profile.designScale)} · 实现稿 ${normalizedSourceLabel(implementation, profile.implementationNormalizedWidth, profile.implementationNormalizedHeight, profile.implementationScale)}`}
       </span>
       <div className="alignment-banner-actions">
         {workflowActive ? (
@@ -515,7 +522,8 @@ function ComparisonCanvas({ mode, sources, zoom, findings, selectedId, onSelect,
           </div>
         ) : (
           <>
-            <em>{profile.exceedsSafetyLimit ? "超过 3200 万像素限制" : assessmentLabel || (alignment === "element" ? `${anchorDeltaLabel} · 只比较重叠区域` : profile.heightsDiffer ? `${alignment === "bottom-left" ? "底部" : "顶部"}对齐 · 保留${alignment === "bottom-left" ? "顶部" : "底部"}差异` : "已就绪")}</em>
+            <em>{profile.exceedsSafetyLimit ? "超过 3200 万像素限制" : assessmentLabel || (profile.mode === "responsive" ? "默认推测 · 请确认同像素密度" : alignment === "element" ? `${anchorDeltaLabel} · 只比较重叠区域` : profile.heightsDiffer ? `${alignment === "bottom-left" ? "底部" : "顶部"}对齐 · 保留${alignment === "bottom-left" ? "顶部" : "底部"}差异` : "已就绪")}</em>
+            {profile.widthsDiffer ? <label className="scale-mode-picker">比例<select aria-label="截图比例" value={scaleMode} onChange={(event) => onScaleModeChange(event.target.value)} disabled={sourceActionsDisabled}><option value="responsive">原像素·同密度</option><option value="width-normalized">等比缩放·同宽</option></select></label> : null}
             <VerticalAlignmentSwitch value={alignment} onChange={chooseAlignment} disabled={sourceActionsDisabled} />
             {alignment === "element" ? <div className="alignment-applied-actions"><button type="button" onClick={onBeginElementAlignment}>重选</button><button type="button" onClick={onClearElementAlignment}>清除</button></div> : null}
           </>
@@ -568,10 +576,12 @@ function ComparisonCanvas({ mode, sources, zoom, findings, selectedId, onSelect,
   );
 }
 
-function FindingsTable({ findings, selectedId, onSelect, onLocate, statusFilter, setStatusFilter, visibleColumns, setVisibleColumns, collapsed, onToggleCollapsed }) {
+function FindingsTable({ findings, selectedId, onSelect, onLocate, statusFilter, setStatusFilter, categoryFilter, setCategoryFilter, visibleColumns, setVisibleColumns, collapsed, onToggleCollapsed }) {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [columnsOpen, setColumnsOpen] = useState(false);
-  const visibleFindings = statusFilter === "all" ? findings : findings.filter((item) => item.status === statusFilter);
+  const visibleFindings = findings.filter((item) =>
+    (statusFilter === "all" || item.status === statusFilter) &&
+    (categoryFilter === "all" || item.category === categoryFilter));
   const counts = useMemo(() => ({
     all: findings.length,
     pending: findings.filter((f) => f.status === "pending").length,
@@ -596,13 +606,18 @@ function FindingsTable({ findings, selectedId, onSelect, onLocate, statusFilter,
           {!collapsed && (
             <>
               <div className="popover-wrap">
-                <button type="button" className={filtersOpen ? "tool-button is-active" : "tool-button"} onClick={() => { setFiltersOpen(!filtersOpen); setColumnsOpen(false); }}><AppIcon icon={FunnelSimple} size={16} /> 筛选</button>
+                <button type="button" className={filtersOpen || categoryFilter !== "all" || statusFilter !== "all" ? "tool-button is-active" : "tool-button"} onClick={() => { setFiltersOpen(!filtersOpen); setColumnsOpen(false); }}><AppIcon icon={FunnelSimple} size={16} /> 筛选</button>
                 {filtersOpen && (
-                  <div className="popover compact-popover">
+                  <div className="popover compact-popover category-filter-popover">
                     <span className="popover-title">按处理状态</span>
                     <button type="button" onClick={() => { setStatusFilter("pending"); setFiltersOpen(false); }}>待确认</button>
                     <button type="button" onClick={() => { setStatusFilter("confirmed"); setFiltersOpen(false); }}>已确认</button>
-                    <button type="button" onClick={() => { setStatusFilter("all"); setFiltersOpen(false); }}>清除筛选</button>
+                    <span className="popover-title">按问题类型</span>
+                    <button type="button" aria-pressed={categoryFilter === "all"} onClick={() => { setCategoryFilter("all"); setFiltersOpen(false); }}>全部类型</button>
+                    {FINDING_CATEGORIES.map(({ id, label }) => (
+                      <button key={id} type="button" aria-pressed={categoryFilter === id} onClick={() => { setCategoryFilter(id); setFiltersOpen(false); }}>{label}<span>{findings.filter((item) => item.category === id).length}</span></button>
+                    ))}
+                    <button type="button" onClick={() => { setStatusFilter("all"); setCategoryFilter("all"); setFiltersOpen(false); }}>清除筛选</button>
                   </div>
                 )}
               </div>
@@ -637,6 +652,7 @@ function FindingsTable({ findings, selectedId, onSelect, onLocate, statusFilter,
               <thead>
                 <tr>
                   <th>发现</th>
+                  <th className="category-column">类型</th>
                   {visibleColumns.location && <th>大概位置</th>}
                   {visibleColumns.evidence && <th>判断依据</th>}
                   <th>状态</th>
@@ -647,6 +663,7 @@ function FindingsTable({ findings, selectedId, onSelect, onLocate, statusFilter,
                 {visibleFindings.map((finding) => (
                   <tr key={finding.id} aria-selected={selectedId === finding.id} className={selectedId === finding.id ? "is-selected" : ""} onClick={() => onSelect(finding.id)}>
                     <td><button type="button" className="row-title" onClick={(event) => { event.stopPropagation(); onSelect(finding.id); }}>{finding.title}</button></td>
+                    <td><CategoryBadge category={finding.category} /></td>
                     {visibleColumns.location && <td><span className="truncate">{finding.location}</span></td>}
                     {visibleColumns.evidence && <td><span className="evidence-cell">{finding.evidence}</span></td>}
                     <td><StatusBadge status={finding.status} /></td>
@@ -696,7 +713,7 @@ function FindingsEmptyPanel({ runStatus, hasInputs, auditMeta }) {
 
 function DetailEmptyPanel({ runStatus, hasInputs, auditMeta, filtered = false }) {
   const copy = filtered
-    ? { title: "当前筛选下没有问题", description: "切换问题状态筛选后，可继续查看对应的问题详情。" }
+    ? { title: "当前筛选下没有问题", description: "调整处理状态或问题类型筛选后，可继续查看对应的问题详情。" }
     : getResultEmptyCopy(runStatus, hasInputs, auditMeta);
   return (
     <aside className="detail-panel detail-panel--empty" aria-label="问题详情">
@@ -790,6 +807,7 @@ function DetailPanel({ finding, findings, implementationSource, comparisonProfil
         <div className="issue-nav"><span>问题 {currentIndex + 1} / {findings.length}</span><div><button type="button" disabled={currentIndex === 0} onClick={() => move(-1)} aria-label="上一个问题"><CaretLeft size={16} /></button><button type="button" disabled={currentIndex === findings.length - 1} onClick={() => move(1)} aria-label="下一个问题"><CaretRight size={16} /></button></div></div>
         <section className="detail-summary">
           <span className="eyebrow">{statusMeta[finding.status]?.label || "待确认"} · {finding.priority === "—" ? "优先级待定" : finding.priority}</span>
+          <div className="detail-category"><CategoryBadge category={finding.category} /><span>{finding.categorySource === 'manual' ? '人工调整' : '自动归类 · 可调整'}</span></div>
           <h2>{finding.title}</h2>
           <p>{finding.summary}</p>
           <dl className="quick-facts"><div><dt>大概位置</dt><dd>{finding.location}</dd></div><div><dt>判断依据</dt><dd>{finding.evidence}</dd></div></dl>
@@ -799,6 +817,11 @@ function DetailPanel({ finding, findings, implementationSource, comparisonProfil
           <EvidenceCrop finding={finding} source={implementationSource} profile={comparisonProfile} />
         </section>
         <section className="detail-section form-section">
+          <label className="category-select-field">问题类型
+            <select value={FINDING_CATEGORY_LABELS[finding.category] ? finding.category : 'content'} onChange={(event) => onChange({ category: event.target.value, categorySource: 'manual' })}>
+              {FINDING_CATEGORIES.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
+            </select>
+          </label>
           <div className="field-grid">
             <label>影响程度<select value={finding.severity} onChange={(event) => onChange({ severity: event.target.value })}>{Object.entries(severityMeta).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
             <label>优先级<select value={finding.priority} onChange={(event) => onChange({ priority: event.target.value })}><option value="—">待定</option><option value="P0">P0</option><option value="P1">P1</option><option value="P2">P2</option><option value="P3">P3</option></select></label>
@@ -1035,7 +1058,7 @@ async function exportAnnotatedPng({ auditName, implementation, findings, profile
     context.fillStyle = "#17233a";
     context.font = "700 16px sans-serif";
     const title = finding.title.length > 28 ? `${finding.title.slice(0, 28)}…` : finding.title;
-    context.fillText(`${finding.priority} · ${title}`, panelX + 72, y + 5);
+    context.fillText(`${finding.priority} · ${FINDING_CATEGORY_LABELS[finding.category] || '内容'} · ${title}`, panelX + 72, y + 5);
     context.fillStyle = "#5a687c";
     context.font = "500 13px sans-serif";
     context.fillText(finding.location.slice(0, 52), panelX + 72, y + 31);
@@ -1070,8 +1093,8 @@ function ExportDialog({ auditName, findings, sources, profile, onClose, onToast 
         },
       };
       const content = format === "json"
-        ? JSON.stringify({ ...metadata, findings: ordered }, null, 2)
-        : [`# UI 走查清单`, ``, `审查：${auditName}`, ``, `引擎：${metadata.engine}`, `对比模式：${profile?.label || "未记录"}`, ``, ...ordered.flatMap((item) => [`## ${item.priority} · ${item.title}`, `- 状态：${statusMeta[item.status].label}`, `- 严重度：${severityMeta[item.severity]}`, `- 位置：${item.location}`, `- 证据：${item.evidence}（${item.delta}）`, `- 判断：${item.summary}`, `- 建议：${item.note || "待补充"}`, ``])].join("\n");
+        ? JSON.stringify({ ...metadata, findings: ordered.map((item) => ({ ...item, categoryLabel: FINDING_CATEGORY_LABELS[item.category] || '内容' })) }, null, 2)
+        : [`# UI 走查清单`, ``, `审查：${auditName}`, ``, `引擎：${metadata.engine}`, `对比模式：${profile?.label || "未记录"}`, ``, ...ordered.flatMap((item) => [`## ${item.priority} · ${item.title}`, `- 类型：${FINDING_CATEGORY_LABELS[item.category] || '内容'}`, `- 状态：${statusMeta[item.status].label}`, `- 严重度：${severityMeta[item.severity]}`, `- 位置：${item.location}`, `- 证据：${item.evidence}（${item.delta}）`, `- 判断：${item.summary}`, `- 建议：${item.note || "待补充"}`, ``])].join("\n");
       downloadBlob(new Blob([content], { type: format === "json" ? "application/json" : "text/markdown" }), `ui-audit.${format === "json" ? "json" : "md"}`);
     }
     onToast(`已导出 ${selected.length} 条问题`);
@@ -1226,6 +1249,7 @@ export function Prototype() {
   const [selectedId, setSelectedId] = useState(null);
   const [mode, setMode] = useState("side");
   const [alignment, setAlignment] = useState(query.get("align") === "bottom" ? "bottom-left" : "top-left");
+  const [scaleModeChoice, setScaleModeChoice] = useState("auto");
   const [anchors, setAnchors] = useState({ design: null, implementation: null });
   const [anchorFlow, setAnchorFlow] = useState(idleAnchorFlow);
   const [zoom, setZoom] = useState(100);
@@ -1235,6 +1259,7 @@ export function Prototype() {
   const [runProgress, setRunProgress] = useState({ phase: "", percent: 0 });
   const [runError, setRunError] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [categoryFilter, setCategoryFilter] = useState("all");
   const [visibleColumns, setVisibleColumns] = useState({ location: true, evidence: true });
   const [findingsCollapsed, setFindingsCollapsed] = useState(false);
   const [focusRequest, setFocusRequest] = useState(null);
@@ -1253,14 +1278,19 @@ export function Prototype() {
   const toastTimerRef = useRef(null);
   const focusTokenRef = useRef(0);
   const auditNameManualRef = useRef(false);
+  const scaleMode = scaleModeChoice === "auto" && sources.design && sources.implementation
+    ? suggestScaleMode(sources.design, sources.implementation)
+    : scaleModeChoice === "auto" ? "width-normalized" : scaleModeChoice;
   const profile = useMemo(() => deriveComparisonProfile(
     sources.design,
     sources.implementation,
-    { alignment, anchors },
-  ), [alignment, anchors, sources]);
+    { alignment, anchors, scaleMode },
+  ), [alignment, anchors, scaleMode, sources]);
   const hasInputs = Boolean(sources.design && sources.implementation);
   const hasAuditResults = runStatus === "completed" && findings.length > 0;
-  const displayedFindings = statusFilter === "all" ? findings : findings.filter((item) => item.status === statusFilter);
+  const displayedFindings = findings.filter((item) =>
+    (statusFilter === "all" || item.status === statusFilter) &&
+    (categoryFilter === "all" || item.category === categoryFilter));
   const selectedFinding = displayedFindings.find((item) => item.id === selectedId) ?? displayedFindings[0] ?? null;
   const canStart = hasInputs && inputState === "ready" && !profile?.exceedsSafetyLimit &&
     anchorFlow.status === "idle" &&
@@ -1317,7 +1347,7 @@ export function Prototype() {
         : hasInputs
           ? alignment === "element"
             ? "图片已按对应元素对齐 · 等待走查"
-            : `图片已同宽${alignment === "bottom-left" ? "底部" : "顶部"}对齐 · 等待走查`
+            : `图片已${profile?.mode === "responsive" ? "按原像素" : "等比同宽"}${alignment === "bottom-left" ? "底部" : "顶部"}对齐 · 等待走查`
           : "请先添加设计稿与实现截图";
   const runButtonLabel = runStatus === "running" ? "取消走查" : ["completed", "incomparable", "failed", "cancelled"].includes(runStatus) ? "重新走查" : "开始走查";
 
@@ -1332,6 +1362,7 @@ export function Prototype() {
     setFocusRequest(null);
     setAuditMeta(null);
     setStatusFilter("all");
+    setCategoryFilter("all");
     setRunStatus("draft");
     setRunError("");
     setRunProgress({ phase: "", percent: 0 });
@@ -1344,6 +1375,13 @@ export function Prototype() {
     setAnchorFlow(idleAnchorFlow);
     invalidateAuditForAlignment();
     notify(`已改为${nextAlignment === "bottom-left" ? "底部" : "顶部"}对齐，请重新走查`);
+  };
+  const changeScaleMode = (nextScaleMode) => {
+    if (runStatus === "running" || nextScaleMode === scaleMode) return;
+    if (!["responsive", "width-normalized"].includes(nextScaleMode)) return;
+    setScaleModeChoice(nextScaleMode);
+    invalidateAuditForAlignment();
+    notify("截图比例已更改，请确认两图的像素密度并重新走查", "warning");
   };
   const beginElementAlignment = () => {
     if (runStatus === "running" || !hasInputs) return;
@@ -1473,14 +1511,28 @@ export function Prototype() {
     const activeId = selectedFinding?.id ?? selectedId;
     const nextFindings = findings.map((item) => item.id === activeId ? { ...item, ...patch } : item);
     setFindings(nextFindings);
-    if (statusFilter !== "all" && patch.status && patch.status !== statusFilter) {
-      setSelectedId(nextFindings.find((item) => item.status === statusFilter)?.id ?? null);
+    if (patch.status || patch.category) {
+      const nextVisible = nextFindings.filter((item) =>
+        (statusFilter === "all" || item.status === statusFilter) &&
+        (categoryFilter === "all" || item.category === categoryFilter));
+      if (!nextVisible.some((item) => item.id === activeId)) {
+        setSelectedId(nextVisible[0]?.id ?? null);
+      }
     }
     notify("已更新当前问题");
   };
   const applyStatusFilter = (nextFilter) => {
     setStatusFilter(nextFilter);
-    const nextVisible = nextFilter === "all" ? findings : findings.filter((item) => item.status === nextFilter);
+    const nextVisible = findings.filter((item) =>
+      (nextFilter === "all" || item.status === nextFilter) &&
+      (categoryFilter === "all" || item.category === categoryFilter));
+    if (!nextVisible.some((item) => item.id === selectedId)) setSelectedId(nextVisible[0]?.id ?? null);
+  };
+  const applyCategoryFilter = (nextFilter) => {
+    setCategoryFilter(nextFilter);
+    const nextVisible = findings.filter((item) =>
+      (statusFilter === "all" || item.status === statusFilter) &&
+      (nextFilter === "all" || item.category === nextFilter));
     if (!nextVisible.some((item) => item.id === selectedId)) setSelectedId(nextVisible[0]?.id ?? null);
   };
   const requestStatus = (status) => {
@@ -1517,6 +1569,7 @@ export function Prototype() {
     setSelectedId(null);
     setFocusRequest(null);
     setStatusFilter("all");
+    setCategoryFilter("all");
     setRunStatus("running");
     setAuditMeta(null);
     setRunError("");
@@ -1528,6 +1581,7 @@ export function Prototype() {
         implementationFile: sources.implementation.file,
         alignment,
         anchors,
+        scaleMode,
         signal: controller.signal,
         onProgress: setRunProgress,
       });
@@ -1577,6 +1631,7 @@ export function Prototype() {
     abortRef.current = null;
     sourcesRef.current = next;
     setSources(next);
+    setScaleModeChoice("auto");
     if (Object.prototype.hasOwnProperty.call(changes, "design") || Object.prototype.hasOwnProperty.call(changes, "implementation")) {
       setAnchors({ design: null, implementation: null });
       setAnchorFlow(idleAnchorFlow);
@@ -1587,6 +1642,7 @@ export function Prototype() {
     setFocusRequest(null);
     setAuditMeta(null);
     setStatusFilter("all");
+    setCategoryFilter("all");
     setRunStatus("draft");
     setRunError("");
     setRunProgress({ phase: "", percent: 0 });
@@ -1732,8 +1788,8 @@ export function Prototype() {
           </header>
           <div className="workspace-body">
             <div className={`center-column ${hasAuditResults && findingsCollapsed ? "is-findings-collapsed" : ""}`}>
-              <section className="comparison-panel" aria-label="视觉对比画布"><ComparisonCanvas mode={mode} sources={sources} zoom={zoom} findings={findings} selectedId={selectedFinding?.id ?? selectedId} onSelect={setSelectedId} onUpload={openSourcePicker} onRemove={removeSource} onDropFile={dropLocalFile} onDropError={(role, message) => notify(`${role === "design" ? "设计稿" : "实现截图"}导入失败：${message}`, "error")} profile={profile} auditMeta={auditMeta} sourceActionsDisabled={runStatus === "running" || inputState === "importing" || anchorFlow.status !== "idle"} focusRequest={focusRequest} alignment={alignment} onAlignmentChange={changeAlignment} anchorFlow={anchorFlow} anchors={anchors} onBeginElementAlignment={beginElementAlignment} onAnchorSelect={selectAlignmentAnchor} onAnchorInvalid={(message) => notify(message, "warning")} onApplyElementAlignment={applyElementAlignment} onResetElementAlignment={resetElementAlignment} onCancelElementAlignment={cancelElementAlignment} onClearElementAlignment={clearElementAlignment} />{runStatus === "running" && <div className="analysis-overlay"><span className="spinner" /><strong>{phaseLabels[runProgress.phase] || "正在走查"}</strong><p>本地引擎处理中 · {Math.round(runProgress.percent || 0)}%</p></div>}</section>
-              {hasAuditResults ? <FindingsTable findings={findings} selectedId={selectedFinding?.id ?? null} onSelect={setSelectedId} onLocate={locateFinding} statusFilter={statusFilter} setStatusFilter={applyStatusFilter} visibleColumns={visibleColumns} setVisibleColumns={setVisibleColumns} collapsed={findingsCollapsed} onToggleCollapsed={() => setFindingsCollapsed((value) => !value)} /> : <FindingsEmptyPanel runStatus={runStatus} hasInputs={hasInputs} auditMeta={auditMeta} />}
+              <section className="comparison-panel" aria-label="视觉对比画布"><ComparisonCanvas mode={mode} sources={sources} zoom={zoom} findings={findings} selectedId={selectedFinding?.id ?? selectedId} onSelect={setSelectedId} onUpload={openSourcePicker} onRemove={removeSource} onDropFile={dropLocalFile} onDropError={(role, message) => notify(`${role === "design" ? "设计稿" : "实现截图"}导入失败：${message}`, "error")} profile={profile} auditMeta={auditMeta} sourceActionsDisabled={runStatus === "running" || inputState === "importing" || anchorFlow.status !== "idle"} focusRequest={focusRequest} alignment={alignment} onAlignmentChange={changeAlignment} scaleMode={scaleMode} onScaleModeChange={changeScaleMode} anchorFlow={anchorFlow} anchors={anchors} onBeginElementAlignment={beginElementAlignment} onAnchorSelect={selectAlignmentAnchor} onAnchorInvalid={(message) => notify(message, "warning")} onApplyElementAlignment={applyElementAlignment} onResetElementAlignment={resetElementAlignment} onCancelElementAlignment={cancelElementAlignment} onClearElementAlignment={clearElementAlignment} />{runStatus === "running" && <div className="analysis-overlay"><span className="spinner" /><strong>{phaseLabels[runProgress.phase] || "正在走查"}</strong><p>本地引擎处理中 · {Math.round(runProgress.percent || 0)}%</p></div>}</section>
+              {hasAuditResults ? <FindingsTable findings={findings} selectedId={selectedFinding?.id ?? null} onSelect={setSelectedId} onLocate={locateFinding} statusFilter={statusFilter} setStatusFilter={applyStatusFilter} categoryFilter={categoryFilter} setCategoryFilter={applyCategoryFilter} visibleColumns={visibleColumns} setVisibleColumns={setVisibleColumns} collapsed={findingsCollapsed} onToggleCollapsed={() => setFindingsCollapsed((value) => !value)} /> : <FindingsEmptyPanel runStatus={runStatus} hasInputs={hasInputs} auditMeta={auditMeta} />}
             </div>
             {hasAuditResults && selectedFinding ? <DetailPanel finding={selectedFinding} findings={displayedFindings} implementationSource={sources.implementation} comparisonProfile={profile} onSelect={setSelectedId} onChange={updateSelected} onRequestStatus={requestStatus} onExport={() => setModal({ type: "export" })} exportDisabled={false} /> : <DetailEmptyPanel runStatus={runStatus} hasInputs={hasInputs} auditMeta={auditMeta} filtered={hasAuditResults && !selectedFinding} />}
           </div>

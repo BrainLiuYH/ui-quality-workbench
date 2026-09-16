@@ -67,6 +67,7 @@ export async function analyzeImages({
   implementationImage,
   alignment = 'top-left',
   anchors = null,
+  scaleMode = 'width-normalized',
   signal,
   onProgress,
 }) {
@@ -76,12 +77,12 @@ export async function analyzeImages({
   const normalization = buildWidthNormalization(
     designImage,
     implementationImage,
-    { alignment, anchors },
+    { alignment, anchors, scaleMode },
   )
   const sourceProfile = buildComparisonProfile(
     designImage,
     implementationImage,
-    { alignment, anchors },
+    { alignment, anchors, scaleMode },
   )
   if (alignment === 'element' && !normalization.anchorReady) {
     throw new Error('Element alignment requires matching design and implementation anchors')
@@ -114,7 +115,7 @@ export async function analyzeImages({
     comparisonWidth: normalization.canvasWidth,
     comparisonHeight: normalization.canvasHeight,
   }
-  const analysisRect = alignment === 'element'
+  const analysisRect = alignment === 'element' || sourceProfile.mode === 'responsive'
     ? normalization.overlapRect
     : {
         x: 0,

@@ -104,6 +104,276 @@ function premultipliedLuminance(data, index) {
   )
 }
 
+// Large flat backgrounds can differ by a few RGB levels across the entire
+// screenshot. Treat that as one background-colour observation, rather than
+// letting it connect unrelated components into a page-sized diff region.
+function inferBackgroundPair(design, implementation, width, height) {
+  const samples = [[], []]
+  const step = Math.max(1, Math.round(height / 48))
+  for (let y = Math.round(height * 0.09); y < height * 0.76; y += step) {
+    for (const x of [1, Math.max(1, width - 2)]) {
+      const index = (y * width + x) * 4
+      for (const [side, data] of [design, implementation].entries()) {
+        if (data[index + 3] < 248) continue
+        samples[side].push([data[index], data[index + 1], data[index + 2]])
+      }
+    }
+  }
+  if (samples.some((side) => side.length < 12)) return null
+  const medians = samples.map((side) => [0, 1, 2].map((channel) => {
+    const sorted = side.map((rgb) => rgb[channel]).sort((a, b) => a - b)
+    return sorted[Math.floor(sorted.length / 2)]
+  }))
+  const near = (rgb, median) => rgb.every((value, channel) =>
+    Math.abs(value - median[channel]) <= 9)
+  if (samples.some((side, index) =>
+    side.filter((rgb) => near(rgb, medians[index])).length / side.length < 0.72)) {
+    return null
+  }
+  return {
+    design: medians[0],
+    implementation: medians[1],
+    changed: medians[0].reduce((sum, value, channel) =>
+      sum + Math.abs(value - medians[1][channel]), 0) / 3 >= 5,
+  }
+}
+
+function nearBackgroundPixel(data, index, rgb) {
+  return data[index + 3] >= 248 && [0, 1, 2].every((channel) =>
+    Math.abs(data[index + channel] - rgb[channel]) <= 9)
+}
+
+function darkFillLift(data, part, width, height, background) {
+  if (!background) return null
+  const values = []
+  const x0 = Math.max(0, Math.round(part.x + part.w * 0.18))
+  const x1 = Math.min(width, Math.round(part.x + part.w * 0.82))
+  const y0 = Math.max(0, Math.round(part.y + part.h * 0.2))
+  const y1 = Math.min(height, Math.round(part.y + part.h * 0.8))
+  for (let y = y0; y < y1; y += 3) {
+    for (let x = x0; x < x1; x += 3) {
+      const index = (y * width + x) * 4
+      if (data[index + 3] < 248) continue
+      const light = (data[index] + data[index + 1] + data[index + 2]) / 3
+      if (light < 100) values.push(light)
+    }
+  }
+  if (values.length < 16) return null
+  values.sort((a, b) => a - b)
+  return values[Math.floor(values.length / 2)] -
+    (background[0] + background[1] + background[2]) / 3
+}
+
+function largestFlatAccent(data, width, height) {
+  const startY = Math.round(height * 0.84)
+  const endY = Math.min(height, Math.round(height * 0.985))
+  const left = Math.round(width * 0.035)
+  const right = Math.round(width * 0.965)
+  const seen = new Uint8Array(width * height)
+  let best = null
+  const accented = (index, seed) => {
+    if (data[index + 3] < 248) return false
+    const r = data[index]
+    const g = data[index + 1]
+    const b = data[index + 2]
+    if (Math.max(r, g, b) - Math.min(r, g, b) < 48 ||
+      Math.max(r, g, b) < 140) return false
+    return !seed || [0, 1, 2].every((channel) =>
+      Math.abs(data[index + channel] - seed[channel]) <= 15)
+  }
+  for (let y = startY; y < endY; y += 2) {
+    for (let x = left; x < right; x += 2) {
+      const start = y * width + x
+      if (seen[start] || !accented(start * 4)) continue
+      const seed = [...data.slice(start * 4, start * 4 + 3)]
+      const stack = [start]
+      seen[start] = 1
+      let count = 0
+      let minX = x
+      let maxX = x
+      let minY = y
+      let maxY = y
+      while (stack.length) {
+        const current = stack.pop()
+        const cx = current % width
+        const cy = Math.floor(current / width)
+        count++
+        minX = Math.min(minX, cx)
+        maxX = Math.max(maxX, cx)
+        minY = Math.min(minY, cy)
+        maxY = Math.max(maxY, cy)
+        for (const next of [current - 1, current + 1, current - width, current + width]) {
+          const nx = next % width
+          const ny = Math.floor(next / width)
+          if (nx < left || nx >= right || ny < startY || ny >= endY ||
+            seen[next] || !accented(next * 4, seed)) continue
+          seen[next] = 1
+          stack.push(next)
+        }
+      }
+      const boxWidth = maxX - minX + 1
+      const boxHeight = maxY - minY + 1
+      const rectangular = count / Math.max(1, boxWidth * boxHeight) >= 0.58
+      if (rectangular && boxWidth >= width * 0.08 &&
+        boxWidth <= width * 0.45 && boxHeight >= height * 0.025 &&
+        boxHeight <= height * 0.11 && (!best || count > best.count)) {
+        best = { x: minX, y: minY, w: boxWidth, h: boxHeight, count, color: seed }
+      }
+    }
+  }
+  return best
+}
+
+function largestLightCard(data, width, height) {
+  const startY = Math.round(height * 0.18)
+  const endY = Math.round(height * 0.5)
+  const left = Math.round(width * 0.025)
+  const right = Math.round(width * 0.975)
+  const seen = new Uint8Array(width * height)
+  const isLight = (pixel) => data[pixel + 3] >= 248 &&
+    Math.min(data[pixel], data[pixel + 1], data[pixel + 2]) >= 215 &&
+    Math.max(data[pixel], data[pixel + 1], data[pixel + 2]) -
+      Math.min(data[pixel], data[pixel + 1], data[pixel + 2]) <= 35
+  let best = null
+  for (let y = startY; y < endY; y += 2) {
+    for (let x = left; x < right; x += 2) {
+      const start = y * width + x
+      if (seen[start] || !isLight(start * 4)) continue
+      const stack = [start]
+      seen[start] = 1
+      let count = 0
+      let minX = x
+      let minY = y
+      let maxX = x
+      let maxY = y
+      while (stack.length) {
+        const current = stack.pop()
+        const cx = current % width
+        const cy = Math.floor(current / width)
+        count++
+        minX = Math.min(minX, cx)
+        minY = Math.min(minY, cy)
+        maxX = Math.max(maxX, cx)
+        maxY = Math.max(maxY, cy)
+        for (const next of [current - 1, current + 1, current - width, current + width]) {
+          const nx = next % width
+          const ny = Math.floor(next / width)
+          if (nx < left || nx >= right || ny < startY || ny >= endY ||
+            seen[next] || !isLight(next * 4)) continue
+          seen[next] = 1
+          stack.push(next)
+        }
+      }
+      const w = maxX - minX + 1
+      const h = maxY - minY + 1
+      if (w >= width * 0.6 && h >= height * 0.035 &&
+        h <= height * 0.16 && count / (w * h) >= 0.52 &&
+        (!best || count > best.count)) {
+        best = { x: minX, y: minY, w, h, count }
+      }
+    }
+  }
+  return best
+}
+
+// Detect the long, paired horizontal contours of a floating bottom bar. The
+// central scan avoids the selected tab at the left and most icon artwork; two
+// matching contours are required so a single media/card edge is not mistaken
+// for a navigation bar.
+function bottomBarBounds(data, width, height) {
+  if (width < 120 || height < 240) return null
+  const left = Math.round(width * 0.28)
+  const right = Math.round(width * 0.78)
+  const stepX = Math.max(2, Math.round(width / 220))
+  const offsetY = Math.max(1, Math.round(height / 900))
+  const samples = Math.ceil((right - left) / stepX)
+  const luminanceAt = (x, y) => {
+    const index = (y * width + x) * 4
+    return 0.2126 * data[index] +
+      0.7152 * data[index + 1] +
+      0.0722 * data[index + 2]
+  }
+  const rows = []
+  for (let y = Math.round(height * 0.82); y < Math.round(height * 0.99); y++) {
+    if (y - offsetY < 0 || y + offsetY >= height) continue
+    let strong = 0
+    let gradient = 0
+    for (let x = left; x < right; x += stepX) {
+      const delta = Math.abs(
+        luminanceAt(x, y - offsetY) - luminanceAt(x, y + offsetY),
+      )
+      if (delta >= 10) strong++
+      gradient += Math.min(delta, 80)
+    }
+    const coverage = strong / samples
+    const meanGradient = gradient / samples
+    if (coverage >= 0.78 && meanGradient >= 11) {
+      rows.push({ y, score: coverage * 60 + meanGradient })
+    }
+  }
+
+  const contours = []
+  for (const row of rows) {
+    const previous = contours.at(-1)
+    if (!previous || row.y - previous.lastY > Math.max(3, height * 0.002)) {
+      contours.push({ ...row, lastY: row.y })
+    } else {
+      previous.lastY = row.y
+      if (row.score > previous.score) {
+        previous.y = row.y
+        previous.score = row.score
+      }
+    }
+  }
+
+  let best = null
+  for (const top of contours) {
+    if (top.y > height * 0.93) continue
+    for (const bottom of contours) {
+      const barHeight = bottom.y - top.y
+      if (bottom.y < height * 0.91 || bottom.y > height * 0.99 ||
+        barHeight < height * 0.05 || barHeight > height * 0.11) continue
+      const score = top.score + bottom.score
+      if (!best || score > best.score) {
+        best = { top: top.y, bottom: bottom.y, height: barHeight, score }
+      }
+    }
+  }
+  return best
+}
+
+// A screenshot cannot prove backdrop-filter or opacity settings. This only
+// measures whether the neutral background inside two matched bars has a
+// different top-to-bottom appearance, excluding bright icons and labels.
+function bottomBarBackgroundProfile(data, width, bar) {
+  const left = Math.round(width * 0.3)
+  const right = Math.round(width * 0.86)
+  const stepX = Math.max(2, Math.round(width / 250))
+  const stepY = Math.max(1, Math.round(bar.height / 28))
+  const sampleStripe = (start, end) => {
+    const values = []
+    let possible = 0
+    const y0 = Math.round(bar.top + bar.height * start)
+    const y1 = Math.round(bar.top + bar.height * end)
+    for (let y = y0; y < y1; y += stepY) {
+      for (let x = left; x < right; x += stepX) {
+        possible++
+        const index = (y * width + x) * 4
+        if (data[index + 3] < 248) continue
+        const light = premultipliedLuminance(data, index)
+        if (light < 85) values.push(light)
+      }
+    }
+    if (values.length < 30 || values.length < possible * 0.65) return null
+    values.sort((a, b) => a - b)
+    return values[Math.floor(values.length / 2)]
+  }
+  const top = sampleStripe(0.1, 0.2)
+  const bottom = sampleStripe(0.83, 0.92)
+  if (top === null || bottom === null) return null
+  return { top, bottom, lift: bottom - top }
+}
+
 export async function diffRasters({
   designPixels,
   implementationPixels,
@@ -139,6 +409,9 @@ export async function diffRasters({
         code === 'LOCALIZED_CONTENT_DIFFERENCE' ||
         code === 'GLOBAL_STRONG_DIFFERENCE'
     }),
+  )
+  const backgroundPair = inferBackgroundPair(
+    designPixels, implementationPixels, width, height,
   )
   const deltaMap = new Uint8Array(pixels)
   const designLuminance = new Uint8Array(pixels)
@@ -203,7 +476,10 @@ export async function diffRasters({
         visualDelta = Math.max(implementationPixelMatch, designPixelMatch)
       }
 
-      deltaMap[pixelIndex] = insideIgnoredTop
+      const bothBackground = backgroundPair &&
+        nearBackgroundPixel(designPixels, rgbaIndex, backgroundPair.design) &&
+        nearBackgroundPixel(implementationPixels, rgbaIndex, backgroundPair.implementation)
+      deltaMap[pixelIndex] = insideIgnoredTop || bothBackground
         ? 0
         : Math.min(255, Math.round(visualDelta))
 
@@ -239,7 +515,9 @@ export async function diffRasters({
   }
 
   reportProgress(onProgress, 'edge-diff', 38)
-  if (!widthNormalized) {
+  // Interpolation can blur a rescaled screenshot, but disabling edge evidence
+  // entirely hides outlines, corners, and one-sided borders in that mode.
+  {
     for (let y = 0; y < height - 1; y++) {
       if (y >= analysisIgnoreTopStart && y < analysisIgnoreTopEnd) continue
       for (let x = 0; x < width - 1; x++) {
@@ -657,6 +935,73 @@ export async function diffRasters({
     }
   }
 
+  // A border may be present on only one side. Bilateral contour gates are
+  // appropriate for size/position, but cannot identify an added outline.
+  // Require a closed, localized perimeter difference and a quiet interior;
+  // a shifted filled rectangle normally changes only two opposing sides.
+  function outlinePattern(part) {
+    const aspect = part.w / Math.max(1, part.h)
+    if (part.w < 50 || part.h < 18 || aspect < 1.5 || aspect > 12) return null
+    const band = Math.max(3, Math.round(Math.min(part.w, part.h) * 0.22))
+    const counts = [0, 0, 0, 0]
+    const changed = [0, 0, 0, 0]
+    let interiorDelta = 0
+    let interiorCount = 0
+    for (let y = part.y; y < Math.min(height, part.y + part.h); y++) {
+      for (let x = part.x; x < Math.min(width, part.x + part.w); x++) {
+        const dx = x - part.x
+        const dy = y - part.y
+        if (dy < band || dy >= part.h - band || dx < band || dx >= part.w - band) continue
+        interiorCount++
+        interiorDelta += deltaMap[y * width + x]
+      }
+    }
+    const interiorMean = interiorDelta / Math.max(1, interiorCount)
+    if (interiorCount < 16 || interiorMean > 55) return null
+    for (let y = part.y; y < Math.min(height, part.y + part.h); y++) {
+      for (let x = part.x; x < Math.min(width, part.x + part.w); x++) {
+        const dx = x - part.x
+        const dy = y - part.y
+        const edges = [dy < band, dy >= part.h - band, dx < band, dx >= part.w - band]
+        const delta = deltaMap[y * width + x]
+        for (let side = 0; side < 4; side++) {
+          if (!edges[side]) continue
+          counts[side]++
+          changed[side] += Number(delta > Math.max(24, interiorMean + 18))
+        }
+      }
+    }
+    const sideRatios = changed.slice(0, 4).map((value, side) => value / Math.max(1, counts[side]))
+    if (sideRatios.filter((ratio) => ratio >= 0.16).length < 3) return null
+    return {
+      confidence: Math.round(sideRatios.reduce((sum, value) => sum + value, 0) * 35),
+      interiorDelta: interiorMean,
+    }
+  }
+
+  function cornerPattern(part) {
+    if (part.w < 10 || part.h < 24 || part.h < part.w * 1.3 ||
+      part.w > width * 0.25) return null
+    const changed = [0, 0, 0]
+    const counts = [0, 0, 0]
+    for (let y = part.y; y < Math.min(height, part.y + part.h); y++) {
+      const relativeY = (y - part.y) / part.h
+      const band = relativeY < 0.37 ? 0 : relativeY >= 0.63 ? 1 :
+        relativeY >= 0.44 && relativeY < 0.56 ? 2 : -1
+      if (band < 0) continue
+      for (let x = part.x; x < Math.min(width, part.x + part.w); x++) {
+        counts[band]++
+        changed[band] += Number(deltaMap[y * width + x] > 24)
+      }
+    }
+    const [top, bottom, middle] = changed.map((value, index) =>
+      value / Math.max(1, counts[index]))
+    return top >= 0.055 && bottom >= 0.055 &&
+      middle <= 0.035 && middle < Math.min(top, bottom) * 0.35
+      ? { confidence: Math.round((top + bottom) * 60) }
+      : null
+  }
+
   function regionPresenceMetrics(part) {
     let sampleCount = 0
     let designOnlyCount = 0
@@ -796,6 +1141,144 @@ export async function diffRasters({
 
   reportProgress(onProgress, 'classify', 82)
   const rawIssues = []
+  if (backgroundPair?.changed) {
+    rawIssues.push({
+      type: '颜色',
+      element: '页面背景',
+      severity: '中等',
+      score: 28,
+      backgroundEvidence: true,
+      box: {
+        x: Math.round(outputWidth * 0.015),
+        y: Math.round(outputHeight * 0.26),
+        w: Math.max(8, Math.round(outputWidth * 0.08)),
+        h: Math.max(8, Math.round(outputHeight * 0.035)),
+      },
+      design_value: toHex(backgroundPair.design),
+      implementation_value: toHex(backgroundPair.implementation),
+      text: `页面背景色不同：设计 ${toHex(backgroundPair.design)}，实现 ${toHex(backgroundPair.implementation)}`,
+    })
+  }
+  const designAccent = largestFlatAccent(designPixels, width, height)
+  const implementationAccent = largestFlatAccent(implementationPixels, width, height)
+  const largerAccent = !designAccent ? implementationAccent
+    : !implementationAccent ? designAccent
+      : designAccent.count >= implementationAccent.count ? designAccent : implementationAccent
+  const smallerAccent = largerAccent === designAccent ? implementationAccent : designAccent
+  if (largerAccent && largerAccent.count >= width * height * 0.0015 &&
+    (!smallerAccent || largerAccent.count >= smallerAccent.count * 2.5)) {
+    rawIssues.push({
+      type: '颜色',
+      element: '底部导航选中态填充',
+      severity: '中等',
+      score: 42,
+      componentEvidence: true,
+      box: outputBoxForAnalysisBounds(largerAccent),
+      design_value: designAccent ? `有大面积纯色填充 ${toHex(designAccent.color)}` : '无对应的大面积纯色填充',
+      implementation_value: implementationAccent ? `有大面积纯色填充 ${toHex(implementationAccent.color)}` : '无对应的大面积纯色填充',
+      text: '底部控件的选中态纯色填充面积明显不同；请对照选中态外观',
+    })
+  }
+  if ((profile.mode === 'same-width' || profile.mode === 'exact') &&
+    profile.heightsDiffer !== true && profile.alignment !== 'element' &&
+    !profile.designOffsetY && !profile.implementationOffsetY) {
+    const designBar = bottomBarBounds(designPixels, width, height)
+    const implementationBar = bottomBarBounds(implementationPixels, width, height)
+    if (designBar && implementationBar &&
+      Math.abs(designBar.height - implementationBar.height) <= Math.max(4, height * 0.008)) {
+      const designGap = Math.round((height - designBar.bottom) * scaleY)
+      const implementationGap = Math.round((height - implementationBar.bottom) * scaleY)
+      const bounds = {
+        x: Math.round(width * 0.04),
+        y: Math.min(designBar.top, implementationBar.top),
+        w: Math.round(width * 0.92),
+        h: Math.max(designBar.bottom, implementationBar.bottom) -
+          Math.min(designBar.top, implementationBar.top),
+      }
+      if (Math.abs(designBar.bottom - implementationBar.bottom) >= Math.max(5, height * 0.003)) {
+        rawIssues.push({
+          type: '位置',
+          element: '底部操作栏外框',
+          severity: '中等',
+          score: 58,
+          componentEvidence: true,
+          box: outputBoxForAnalysisBounds(bounds),
+          design_value: `距截图底边约 ${designGap}px`,
+          implementation_value: `距截图底边约 ${implementationGap}px`,
+          text: `底部操作栏外框高度近似一致，但实现稿距截图底边比设计稿${implementationGap > designGap ? '多' : '少'}约 ${Math.abs(implementationGap - designGap)}px`,
+        })
+      }
+
+      const designFill = bottomBarBackgroundProfile(designPixels, width, designBar)
+      const implementationFill = bottomBarBackgroundProfile(
+        implementationPixels, width, implementationBar,
+      )
+      if (designFill && implementationFill &&
+        Math.max(Math.abs(designFill.lift), Math.abs(implementationFill.lift)) >= 9 &&
+        Math.min(Math.abs(designFill.lift), Math.abs(implementationFill.lift)) <= 4 &&
+        Math.abs(designFill.lift - implementationFill.lift) >= 10) {
+        const backgroundBounds = {
+          x: Math.round(width * 0.3),
+          y: Math.round(Math.min(
+            designBar.top + designBar.height * 0.1,
+            implementationBar.top + implementationBar.height * 0.1,
+          )),
+          w: Math.round(width * 0.56),
+          h: Math.round(Math.max(
+            designBar.top + designBar.height * 0.92,
+            implementationBar.top + implementationBar.height * 0.92,
+          ) - Math.min(
+            designBar.top + designBar.height * 0.1,
+            implementationBar.top + implementationBar.height * 0.1,
+          )),
+        }
+        rawIssues.push({
+          type: '颜色',
+          element: '底部操作栏背景质感',
+          severity: '中等',
+          score: 48,
+          componentEvidence: true,
+          stableComponentContour: true,
+          box: outputBoxForAnalysisBounds(backgroundBounds),
+          design_value: `${Math.abs(designFill.lift) >= 9 ? '有明暗过渡' : '近乎均一'}（上/下亮度约 ${Math.round(designFill.top)}/${Math.round(designFill.bottom)}）`,
+          implementation_value: `${Math.abs(implementationFill.lift) >= 9 ? '有明暗过渡' : '近乎均一'}（上/下亮度约 ${Math.round(implementationFill.top)}/${Math.round(implementationFill.bottom)}）`,
+          text: '底部操作栏的背景明暗过渡不同；截图无法确认实际透明度或背景模糊参数',
+        })
+      }
+    }
+  }
+  const designCard = largestLightCard(designPixels, width, height)
+  const implementationCard = largestLightCard(implementationPixels, width, height)
+  if (designCard && implementationCard) {
+    const widthDifference = Math.abs(designCard.w - implementationCard.w)
+    const heightDifference = Math.abs(designCard.h - implementationCard.h)
+    const verticalShift = implementationCard.y - designCard.y
+    if (widthDifference <= width * 0.015 &&
+      heightDifference <= height * 0.008 &&
+      Math.abs(verticalShift) >= Math.max(4, height * 0.003)) {
+      const bounds = {
+        x: Math.min(designCard.x, implementationCard.x),
+        y: Math.min(designCard.y, implementationCard.y),
+        w: Math.max(designCard.x + designCard.w,
+          implementationCard.x + implementationCard.w) -
+          Math.min(designCard.x, implementationCard.x),
+        h: Math.max(designCard.y + designCard.h,
+          implementationCard.y + implementationCard.h) -
+          Math.min(designCard.y, implementationCard.y),
+      }
+      rawIssues.push({
+        type: '位置',
+        element: '浅色卡片外框',
+        severity: '中等',
+        score: 55,
+        componentEvidence: true,
+        box: outputBoxForAnalysisBounds(bounds),
+        design_value: `卡片上缘 y=${Math.round(designCard.y * scaleY)}px`,
+        implementation_value: `卡片上缘 y=${Math.round(implementationCard.y * scaleY)}px`,
+        text: `双侧浅色卡片的外框大小近似一致，实现稿上缘相对设计稿位移 ${Math.round(verticalShift * scaleY)}px`,
+      })
+    }
+  }
   const sortedParts = parts.sort((a, b) => b.impact - a.impact)
 
   for (let index = 0; index < sortedParts.length; index++) {
@@ -931,6 +1414,43 @@ export async function diffRasters({
     const regionAspect = cellBox.w / Math.max(1, cellBox.h)
     const shortestSide = Math.min(cellBox.w, cellBox.h)
     const longestSide = Math.max(cellBox.w, cellBox.h)
+    const topRightBadgeLike = backgroundPair &&
+      part.x >= width * 0.52 && part.y >= height * 0.055 &&
+      part.y <= height * 0.18 && part.w >= width * 0.13 &&
+      part.w <= width * 0.45 && part.h >= height * 0.018 &&
+      part.h <= height * 0.07 && regionAspect >= 2.1 &&
+      regionAspect <= 8
+    if (topRightBadgeLike) {
+      const designLift = darkFillLift(
+        designPixels, part, width, height, backgroundPair.design,
+      )
+      const implementationLift = darkFillLift(
+        implementationPixels, part, width, height, backgroundPair.implementation,
+      )
+      if (designLift !== null && implementationLift !== null &&
+        Math.abs(designLift - implementationLift) >= 11) {
+        const badgePadX = Math.round(cellBox.w * 0.08)
+        const badgePadY = Math.round(cellBox.h * 0.23)
+        rawIssues.push({
+          ...baseIssue,
+          box: {
+            x: Math.max(0, cellBox.x - badgePadX),
+            y: Math.max(0, cellBox.y - badgePadY),
+            w: Math.min(outputWidth - Math.max(0, cellBox.x - badgePadX),
+              cellBox.w + badgePadX * 2),
+            h: Math.min(outputHeight - Math.max(0, cellBox.y - badgePadY),
+              cellBox.h + badgePadY * 2),
+          },
+          type: '颜色',
+          element: '顶部状态标签背景',
+          design_value: `相对页面底色亮度 +${Math.round(designLift)}`,
+          implementation_value: `相对页面底色亮度 +${Math.round(implementationLift)}`,
+          text: '顶部状态标签的背景填充明显不同；这是相对各自页面底色的测量，不受整页底色差异影响',
+          componentEvidence: true,
+        })
+        continue
+      }
+    }
     const minimumTextureEdges = Math.max(8, Math.round(shortestSide / 4))
     const bothTextured = designMetrics.edgeCount >= minimumTextureEdges &&
       implementationMetrics.edgeCount >= minimumTextureEdges &&
@@ -952,6 +1472,29 @@ export async function diffRasters({
       Math.min(designMetrics.density, implementationMetrics.density) >= 0.02 &&
       Math.min(designMetrics.interior, implementationMetrics.interior) >= 0.035 &&
       (colorDelta > (widthNormalized ? 12 : 8) || densityDelta > 0.02 || part.score > 24)
+    // A large, textured block on one side and a near-empty flat block on the
+    // other is observable presence evidence, not a claim about CSS or route.
+    // Keep this separate from two different (but both present) media assets.
+    const visibleContentOnDesign = designMetrics.density >= 0.09 &&
+      designMetrics.interior >= 0.17 && implementationMetrics.density <= 0.012
+    const visibleContentOnImplementation = implementationMetrics.density >= 0.09 &&
+      implementationMetrics.interior >= 0.17 && designMetrics.density <= 0.012
+    const largeFlatAbsence = area >= 0.035 && shortestSide >= 28 &&
+      cellBox.w >= outputWidth * 0.36 &&
+      (visibleContentOnDesign || visibleContentOnImplementation)
+    if (largeFlatAbsence) {
+      rawIssues.push({
+        ...baseIssue,
+        type: '内容',
+        element: '大面积可见内容',
+        design_value: visibleContentOnDesign ? '有明显内容轮廓' : '该范围近似空白',
+        implementation_value: visibleContentOnImplementation ? '有明显内容轮廓' : '该范围近似空白',
+        text: '同一范围一侧有大面积可见内容，另一侧近似空白；请确认截图状态和该内容是否应出现',
+        confidence: densityDelta * 100,
+        presenceEvidence: 'large-flat-absence',
+      })
+      continue
+    }
     const verySlender = regionAspect > 7 || regionAspect < 1 / 7 ||
       visibleAspect > 7 || visibleAspect < 1 / 7 ||
       (shortestSide <= Math.max(5, Math.round(Math.min(outputWidth, outputHeight) / 180)) &&
@@ -1017,7 +1560,39 @@ export async function diffRasters({
       continue
     }
 
+    // Two full-bleed media feeds may connect through the image content and
+    // fixed navigation overlay. Their combined edge centroid is not a valid
+    // layout measurement. The independent component pass above can still
+    // report a flat selected-state fill within this broad region.
+    if (contentVariationExpected && area >= 0.12 &&
+      part.y >= height * 0.55 && cellBox.w >= outputWidth * 0.58 &&
+      designMetrics.opaqueAlphaCoverage > 0.9 &&
+      implementationMetrics.opaqueAlphaCoverage > 0.9) {
+      rawIssues.push({
+        ...baseIssue,
+        type: '内容',
+        element: '大面积可见内容区域',
+        design_value: '媒体或可变内容',
+        implementation_value: '媒体或可变内容',
+        text: '大面积内容不同，不能仅凭混合像素可靠判断布局',
+        reviewOnly: true,
+        mediaEnvelope: true,
+        partId: `part-${index + 1}`,
+      })
+      continue
+    }
+
     const candidates = []
+    const outline = outlinePattern(part)
+    const outlineCandidate = outline ? {
+      type: '边框',
+      confidence: Math.max(25, outline.confidence),
+      element: '组件外轮廓',
+      design_value: '外轮廓可见情况见设计稿',
+      implementation_value: '外轮廓可见情况见实现稿',
+      text: '组件外轮廓在设计稿和实现稿中不一致，请对照查看是否缺少或多出边框',
+    } : null
+    if (outlineCandidate) candidates.push(outlineCandidate)
     // A very thin connected fragment is not enough evidence for a standalone
     // element. It can be an anti-aliased edge or an internal contour of a
     // larger object, so do not turn it into a size/position result either.
@@ -1030,6 +1605,16 @@ export async function diffRasters({
       implementationMetrics.edgeCount >= minimumGeometryEdges &&
       edgeEvidenceBalance >= 0.28
     const geometryAllowed = !verySlender && bothSidesEdgeEvidence
+    const cornerEvidence = bothSidesEdgeEvidence ? cornerPattern(part) : null
+    const cornerCandidate = cornerEvidence ? {
+      type: '圆角',
+      confidence: Math.max(24, cornerEvidence.confidence),
+      element: '组件角部',
+      design_value: '角部形状见设计稿',
+      implementation_value: '角部形状见实现稿',
+      text: '组件上、下角部的可见轮廓不同，请对照确认圆角形状',
+    } : null
+    if (cornerCandidate) candidates.push(cornerCandidate)
     const normalized = profile.mode === 'width-normalized' ? '归一化 ' : ''
     const minimumGeometryDelta = Math.max(
       4,
@@ -1065,6 +1650,20 @@ export async function diffRasters({
       Math.min(designMetrics.density, implementationMetrics.density) >= 0.025 &&
       Math.max(designMetrics.density, implementationMetrics.density) <= 0.48
 
+    if (contentVariationExpected && textLikeGeometry && textLikeEdges &&
+      cellBox.h <= outputHeight * 0.055) {
+      rawIssues.push({
+        ...baseIssue,
+        type: '文字',
+        element: '文字行轮廓',
+        design_value: '可见文字轮廓',
+        implementation_value: '可见文字轮廓',
+        text: '文字轮廓存在变化；未核对文本内容前不将其推断为字号或元素尺寸错误',
+        reviewOnly: true,
+      })
+      continue
+    }
+
     if (!verySlender && textLikeGeometry && textLikeEdges && densityDelta > 0.02) {
       candidates.push({
         type: '文字',
@@ -1075,12 +1674,18 @@ export async function diffRasters({
         text: `文字轮廓差异：设计 ${toPercent(designMetrics.density)}，实现 ${toPercent(implementationMetrics.density)}`,
       })
     }
-    const componentLike = geometryAllowed && regionAspect > 0.45 && regionAspect < 4 &&
-      shortestSide >= 10 && longestSide <= 280 &&
+    const wideControlLike = regionAspect >= 4 && regionAspect <= 12 &&
+      shortestSide >= 10 && longestSide <= outputWidth * 0.92
+    const componentLike = geometryAllowed && regionAspect > 0.45 &&
+      (regionAspect < 4 ? longestSide <= 280 : wideControlLike) &&
+      shortestSide >= 10 &&
       designMetrics.edgeCount >= 4 && implementationMetrics.edgeCount >= 4 &&
       Math.max(designMetrics.density, implementationMetrics.density) < 0.42
+    const styleGeometryMatched = sizeDelta < Math.max(3, shortestSide * 0.04) &&
+      shift < Math.max(3, shortestSide * 0.04)
+    const componentStyleLike = componentLike && styleGeometryMatched
 
-    if (componentLike && regionAspect > 0.55 && regionAspect < 1.8 && cornerDelta > 0.04) {
+    if (componentStyleLike && (regionAspect < 1.8 && regionAspect > 0.55 || wideControlLike) && cornerDelta > 0.04) {
       candidates.push({
         type: '圆角',
         confidence: cornerDelta * 145,
@@ -1090,7 +1695,7 @@ export async function diffRasters({
         text: `圆角轮廓差异：设计 ${toPercent(designMetrics.corner)}，实现 ${toPercent(implementationMetrics.corner)}`,
       })
     }
-    if (componentLike && softDelta > 0.04) {
+    if (componentStyleLike && softDelta > 0.04) {
       candidates.push({
         type: '阴影',
         confidence: softDelta * 120,
@@ -1100,7 +1705,7 @@ export async function diffRasters({
         text: `阴影外缘差异：设计 ${toPercent(designMetrics.soft)}，实现 ${toPercent(implementationMetrics.soft)}`,
       })
     }
-    if (componentLike && perimeterDelta > 0.055) {
+    if (componentStyleLike && perimeterDelta > 0.055) {
       candidates.push({
         type: '边框',
         confidence: perimeterDelta * 130,
@@ -1135,13 +1740,14 @@ export async function diffRasters({
       })
     }
 
-    // Emit a single defensible interpretation for each detected region. A
-    // color result wins for flat regions; otherwise use the strongest gated
-    // geometric/role candidate. This avoids presenting the same pixels as a
-    // simultaneous text, icon, border, shadow, and layout defect.
+    // Keep one primary interpretation, but preserve independently evidenced
+    // fill and structural treatment of a stable component as two group members.
+    // This does not relax the bilateral contour requirement for geometry.
     const flatRegion = Math.max(designMetrics.density, implementationMetrics.density) < 0.045
     let selectedCandidate = null
-    if (colorCandidate && flatRegion) {
+    if (outlineCandidate && (flatRegion || !geometryAllowed)) {
+      selectedCandidate = outlineCandidate
+    } else if (colorCandidate && flatRegion) {
       selectedCandidate = colorCandidate
     } else if (candidates.length) {
       selectedCandidate = candidates.sort((a, b) => b.confidence - a.confidence)[0]
@@ -1162,7 +1768,19 @@ export async function diffRasters({
       }
     }
 
-    if (selectedCandidate) rawIssues.push({ ...baseIssue, ...selectedCandidate })
+    if (selectedCandidate) {
+      rawIssues.push({ ...baseIssue, ...selectedCandidate })
+      if (colorCandidate && (stableComponentContour || outlineCandidate) &&
+        colorCandidate.confidence >= colorThreshold * 1.5 &&
+        (!outlineCandidate || outline.interiorDelta > colorThreshold)) {
+        const structural = candidates
+          .filter((candidate) => ['边框', '圆角', '阴影'].includes(candidate.type))
+          .sort((a, b) => b.confidence - a.confidence)[0]
+        const secondary = selectedCandidate.type === '颜色' ? structural
+          : ['边框', '圆角', '阴影'].includes(selectedCandidate.type) ? colorCandidate : null
+        if (secondary) rawIssues.push({ ...baseIssue, ...secondary })
+      }
+    }
 
     if (index % 12 === 11) {
       reportProgress(onProgress, 'classify', 82 + 12 * index / Math.max(1, sortedParts.length - 1))
@@ -1173,12 +1791,21 @@ export async function diffRasters({
   const issues = []
   const noiseFilteredIssues = demoteNestedMediaColorIssues(rawIssues)
   for (const issue of noiseFilteredIssues.sort((a, b) =>
+    Number(b.componentEvidence === true) - Number(a.componentEvidence === true) ||
+    Number(b.backgroundEvidence === true) - Number(a.backgroundEvidence === true) ||
+    Number(a.reviewOnly === true) - Number(b.reviewOnly === true) ||
     b.score - a.score || ISSUE_PRIORITY.indexOf(a.type) - ISSUE_PRIORITY.indexOf(b.type),
   )) {
-    const duplicate = issues.some((existing) =>
-      iou(existing.box, issue.box) > 0.72 ||
-      smallOverlap(existing.box, issue.box) > 0.9,
-    )
+    const duplicate = issues.some((existing) => {
+      // The bar background and its selected tab are different visible
+      // sub-elements even when one colour box contains the other.
+      if (existing.componentEvidence && issue.componentEvidence &&
+        existing.element !== issue.element) return false
+      return (existing.type === issue.type || issue.reviewOnly === true) && (
+        iou(existing.box, issue.box) > 0.72 ||
+        smallOverlap(existing.box, issue.box) > 0.9
+      )
+    })
     if (duplicate) continue
     const {
       confidence: _confidence,

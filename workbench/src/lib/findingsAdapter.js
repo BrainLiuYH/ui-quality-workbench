@@ -1,3 +1,5 @@
+import { inferFindingCategory } from './findingCategories.js';
+
 const severityMap = {
   "严重": "major",
   "中等": "moderate",
@@ -130,7 +132,8 @@ function friendlyLocation(box, width, height) {
 
 function pagePresence(group) {
   return (group.members || []).some((member) =>
-    /页面(?:顶部|底部)或高度区域|缺少|额外可见内容/.test(`${member.element || ""}${member.text || ""}`),
+    member.element === "页面顶部或高度区域" ||
+    member.element === "页面底部或高度区域",
   );
 }
 
@@ -144,6 +147,10 @@ export function isActionableGroup(group, context = {}) {
   const types = unique(group?.types?.length ? group.types : members.map((member) => member.type));
   if (!types.length) return false;
   if (group.reviewOnly === true) return false;
+  if (members.some((member) => member.backgroundEvidence === true)) return true;
+  if (members.some((member) => member.componentEvidence === true)) return true;
+  if (Number(group.score ?? members[0]?.score) < 18) return false;
+  if (members.some((member) => member.presenceEvidence === 'large-flat-absence')) return true;
   if (pagePresence(group)) return true;
 
   const element = group.element || members[0]?.element || "";
@@ -156,6 +163,25 @@ export function isActionableGroup(group, context = {}) {
   const height = Number(context.height || context.targetHeight || context.comparisonHeight) || 1;
   const box = readableBox(group.box);
   const areaRatio = box.width * box.height / Math.max(1, width * height);
+  const mediumInput = context.comparability?.status === 'medium';
+  const aspect = box.width / Math.max(1, box.height);
+  // Small glyph fragments are not evidence that a whole element changed its
+  // dimensions. Dynamic text and raster font rendering commonly split a word
+  // into several differently shaped connected components.
+  if (mediumInput && types.every((type) => GEOMETRY_TYPES.has(type)) &&
+    areaRatio < 0.03 && box.height < height * 0.048 &&
+    aspect >= 1.7) return false;
+  if (mediumInput && types.every((type) => GEOMETRY_TYPES.has(type)) &&
+    areaRatio < 0.0035) return false;
+  if (mediumInput && types.every((type) => type === '颜色') &&
+    box.height < height * 0.027 && box.width < width * 0.75) return false;
+  if (mediumInput && types.every((type) => type === '边框') &&
+    areaRatio < 0.002) return false;
+  // A near-page-width region covering several lower media cards cannot be
+  // assigned a single layout cause from pixels alone. Explicit component and
+  // one-sided presence evidence were handled above and remain actionable.
+  if (box.y > height * 0.55 && areaRatio > 0.18 &&
+    box.width > width * 0.6 && types.includes('布局')) return false;
   const widespreadContent = reasonCodes(context.comparability).has(CONTENT_VARIATION_CODE);
 
   if (!widespreadContent) return true;
@@ -180,6 +206,46 @@ export function adaptYangaoGroups(groups = [], context = {}) {
 
   return safeGroups
     .filter((group) => isActionableGroup(group, filterContext))
+    .filter((group) => {
+      if (group.members?.some((member) => member.componentEvidence)) return true;
+      const card = safeGroups.find((candidate) => candidate.members?.some((member) =>
+        member.element === '浅色卡片外框' && member.componentEvidence));
+      if (!card) return true;
+      const box = readableBox(group.box);
+      const cardBox = readableBox(card.box);
+      const overlapX = Math.max(0,
+        Math.min(box.x + box.width, cardBox.x + cardBox.width) -
+        Math.max(box.x, cardBox.x));
+      const overlapY = Math.max(0,
+        Math.min(box.y + box.height, cardBox.y + cardBox.height) -
+        Math.max(box.y, cardBox.y));
+      return overlapX * overlapY / Math.max(1, box.width * box.height) < 0.62;
+    })
+    .filter((group) => {
+      const box = readableBox(group.box);
+      const types = group.types?.length ? group.types :
+        (group.members || []).map((member) => member.type);
+      if (!types.length || !types.every((type) => type === '颜色') ||
+        box.width < dimensions.width * 0.8 ||
+        box.height > dimensions.height * 0.055) return true;
+      // A thin colour band overlapping the trailing edge of a same-width
+      // shifted card is a consequence of that geometry change, not a second
+      // independent fill-colour defect.
+      return !safeGroups.some((other) => {
+        if (other === group || !other.types?.some((type) =>
+          ['尺寸', '位置'].includes(type))) return false;
+        const parent = readableBox(other.box);
+        const overlapX = Math.max(0,
+          Math.min(box.x + box.width, parent.x + parent.width) -
+          Math.max(box.x, parent.x));
+        const overlapY = Math.max(0,
+          Math.min(box.y + box.height, parent.y + parent.height) -
+          Math.max(box.y, parent.y));
+        return overlapX / Math.max(1, box.width) > 0.85 &&
+          overlapY / Math.max(1, box.height) > 0.35 &&
+          parent.height >= box.height * 1.5;
+      });
+    })
     .map((group, index) => {
       const members = Array.isArray(group.members) ? group.members : [];
       const types = unique(group.types?.length ? group.types : members.map((member) => member.type));
@@ -187,6 +253,13 @@ export function adaptYangaoGroups(groups = [], context = {}) {
       const expectedValues = unique(members.map((member) => member.design_value));
       const implementationValues = unique(members.map((member) => member.implementation_value));
       const descriptions = unique(members.map((member) => member.annotation_text || member.text));
+      const flatAbsence = members.some((member) => member.presenceEvidence === 'large-flat-absence');
+      const background = members.some((member) => member.backgroundEvidence === true);
+      const topBadge = members.some((member) => member.element === '顶部状态标签背景');
+      const bottomSelection = members.some((member) => member.element === '底部导航选中态填充');
+      const bottomBarPosition = members.find((member) => member.element === '底部操作栏外框');
+      const bottomBarBackground = members.find((member) => member.element === '底部操作栏背景质感');
+      const lightCard = members.some((member) => member.element === '浅色卡片外框');
       const type = primaryType(types);
       const copy = copyByType[type] || copyByType.内容;
       const presence = pagePresence(group);
@@ -195,10 +268,12 @@ export function adaptYangaoGroups(groups = [], context = {}) {
       return {
         id: `finding-${index + 1}`,
         engineGroupId: group.id || `group-${index + 1}`,
+        category: inferFindingCategory(group),
+        categorySource: 'auto',
         priority: "—",
-        title: presence ? `页面${presenceEdge}内容没有对应上` : copy.title,
+        title: bottomBarBackground ? "底部操作栏背景质感不一致" : bottomBarPosition ? "底部操作栏距底边不一致" : lightCard ? "浅色卡片位置不一致" : bottomSelection ? "底部导航选中态不一致" : topBadge ? "顶部状态标签背景不一致" : background ? "页面背景色不一致" : flatAbsence ? "这块内容一边有、一边空白" : presence ? `页面${presenceEdge}内容没有对应上` : copy.title,
         location: friendlyLocation(bbox, dimensions.width, dimensions.height),
-        evidence: presence ? "一边有内容，另一边没有" : copy.evidence,
+        evidence: bottomBarBackground ? `设计稿${bottomBarBackground.design_value}；实现稿${bottomBarBackground.implementation_value}` : bottomBarPosition ? `设计 ${bottomBarPosition.design_value}；实现 ${bottomBarPosition.implementation_value}` : lightCard ? "外框大小近似一致，但整体位置有偏移" : bottomSelection ? "选中态大面积填充有差异" : topBadge ? "标签填充相对页面底色不同" : background ? "页面空白区域的底色不同" : flatAbsence ? "同一区域只有一边有明显内容" : presence ? "一边有内容，另一边没有" : copy.evidence,
         evidenceLevel: "inferred",
         confidence: null,
         engineScore: Number.isFinite(Number(group.score ?? members[0]?.score))
@@ -212,7 +287,9 @@ export function adaptYangaoGroups(groups = [], context = {}) {
         engineMagnitude: severityMap[group.severity] || "minor",
         status: "pending",
         note: "",
-        summary: presence
+        summary: bottomBarBackground ? "底部操作栏背景的截图呈现不同：一侧有明显明暗过渡，另一侧近乎均一。可对照设计确认透明度、背景模糊和叠层设置；静态截图不能证明具体实现参数。" : bottomBarPosition ? `${bottomBarPosition.text}。这里测量的是截图像素；请核对底部安全区、定位偏移和截图裁切条件。` : lightCard ? "两侧浅色卡片的外框大小近似一致，实现稿中的卡片整体位置有偏移。" : bottomSelection ? "底部导航选中态的大面积纯色填充不同；请对照设计确认是否应采用整块填充。" : topBadge ? "顶部状态标签相对页面底色的填充亮度不同，请确认背景和描边样式。" : background ? "两张图的大面积页面底色不同，请确认颜色规范和截图显示条件。" : flatAbsence
+          ? "一侧有大面积可见内容，另一侧近似空白；请确认页面状态和内容是否应出现。"
+          : presence
           ? `两张图在页面${presenceEdge}没有完整对应，请确认截图范围或页面高度。`
           : copy.summary,
         bbox,

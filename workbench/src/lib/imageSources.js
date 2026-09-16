@@ -60,11 +60,12 @@ export function decodeImageSource(source) {
   return createImageBitmap(source.file);
 }
 
-export function deriveComparisonProfile(design, implementation, { alignment = "top-left", anchors = null } = {}) {
+export function deriveComparisonProfile(design, implementation, { alignment = "top-left", anchors = null, scaleMode = "width-normalized" } = {}) {
   if (!design || !implementation) return null;
   const normalization = buildWidthNormalization(design, implementation, {
     alignment,
     anchors,
+    scaleMode,
     maxPixels: Number.MAX_SAFE_INTEGER,
   });
   const targetWidth = normalization.targetWidth;
@@ -75,9 +76,11 @@ export function deriveComparisonProfile(design, implementation, { alignment = "t
   const bottomAligned = normalization.alignment === "bottom-left";
 
   return {
-    mode: widthsDiffer ? "width-normalized" : "same-width",
+    mode: widthsDiffer ? scaleMode : "same-width",
     label: alignment === "element"
       ? normalization.anchorReady ? "按选中元素对齐" : "等待框选对应元素"
+      : widthsDiffer && scaleMode === "responsive"
+      ? `原像素对比 · ${bottomAligned ? "底部" : "顶部"}对齐`
       : widthsDiffer
       ? `等比放大至同宽${heightsDiffer ? ` · ${bottomAligned ? "底部" : "顶部"}对齐` : ""}`
       : heightsDiffer
@@ -89,9 +92,9 @@ export function deriveComparisonProfile(design, implementation, { alignment = "t
     exceedsSafetyLimit: !Number.isSafeInteger(normalizedPixels) || normalizedPixels > MAX_NORMALIZED_PIXELS,
     designScale: normalization.designScale,
     implementationScale: normalization.implementationScale,
-    designNormalizedWidth: targetWidth,
+    designNormalizedWidth: normalization.designWidth,
     designNormalizedHeight: normalization.designHeight,
-    implementationNormalizedWidth: targetWidth,
+    implementationNormalizedWidth: normalization.implementationWidth,
     implementationNormalizedHeight: normalization.implementationHeight,
     designOffsetX: normalization.designOffsetX,
     designOffsetY: normalization.designOffsetY,

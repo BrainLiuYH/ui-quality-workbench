@@ -50,6 +50,44 @@ test('adapter exposes short plain-language copy and keeps technical data out of 
   assert.equal(finding.technical.method, '像素与边缘启发式')
 })
 
+test('bottom bar position evidence keeps screenshot-pixel distances visible', () => {
+  const candidate = group({
+    type: '位置',
+    element: '底部操作栏外框',
+    box: { x: 45, y: 2146, w: 1035, h: 229 },
+  })
+  candidate.members[0].componentEvidence = true
+  candidate.members[0].design_value = '距截图底边约 61px'
+  candidate.members[0].implementation_value = '距截图底边约 104px'
+  candidate.members[0].text = '底部操作栏外框高度近似一致，但实现稿距截图底边比设计稿多约 43px'
+
+  const [finding] = adaptYangaoGroups([candidate], { width: 1125, height: 2436 })
+
+  assert.equal(finding.category, 'position')
+  assert.equal(finding.title, '底部操作栏距底边不一致')
+  assert.match(finding.evidence, /61px.*104px/)
+  assert.match(finding.summary, /43px/)
+  assert.match(finding.summary, /截图像素/)
+})
+
+test('bottom bar fill difference is labeled style without claiming blur parameters', () => {
+  const candidate = group({
+    type: '颜色',
+    element: '底部操作栏背景质感',
+    box: { x: 45, y: 2146, w: 1035, h: 229 },
+  })
+  candidate.members[0].componentEvidence = true
+  candidate.members[0].design_value = '有明暗过渡（上/下亮度约 25/43）'
+  candidate.members[0].implementation_value = '近乎均一（上/下亮度约 31/31）'
+
+  const [finding] = adaptYangaoGroups([candidate], { width: 1125, height: 2436 })
+
+  assert.equal(finding.category, 'style')
+  assert.equal(finding.title, '底部操作栏背景质感不一致')
+  assert.match(finding.evidence, /25\/43.*31\/31/)
+  assert.match(finding.summary, /静态截图不能证明具体实现参数/)
+})
+
 test('widespread fake-content variation does not become actionable color or tiny geometry findings', () => {
   const context = {
     targetWidth: 1500,
@@ -86,6 +124,17 @@ test('review-only engine observations never create list rows or canvas annotatio
 
   assert.equal(isActionableGroup(candidate, { width: 1500, height: 3333 }), false)
   assert.deepEqual(adaptYangaoGroups([candidate], { width: 1500, height: 3333 }), [])
+})
+
+test('large blank-versus-content evidence stays reviewable during content variation', () => {
+  const candidate = group({ type: '内容', element: '大面积可见内容' })
+  candidate.members[0].presenceEvidence = 'large-flat-absence'
+  const [finding] = adaptYangaoGroups([candidate], {
+    width: 1500, height: 3333,
+    comparability: { reasons: [{ code: 'WIDESPREAD_CONTENT_VARIATION' }] },
+  })
+  assert.equal(finding.title, '这块内容一边有、一边空白')
+  assert.match(finding.summary, /确认页面状态/)
 })
 
 test('one compact visual object with several signals produces one plain-language finding', () => {

@@ -3,6 +3,19 @@
 
 export const MAX_NORMALIZED_PIXELS = 32_000_000
 const SUPPORTED_ALIGNMENTS = new Set(['top-left', 'bottom-left', 'element'])
+const SUPPORTED_SCALE_MODES = new Set(['width-normalized', 'responsive'])
+
+export function suggestScaleMode(designImage, implementationImage) {
+  const design = getImageDimensions(designImage, 'designImage')
+  const implementation = getImageDimensions(implementationImage, 'implementationImage')
+  if (design.width === implementation.width) return 'width-normalized'
+  // A hint, not proof of matching DPR: keep the choice visible and editable.
+  const portrait = [design, implementation].every(({ width, height }) =>
+    height / width > 1.45 && width <= 1600)
+  const widthRatio = Math.max(design.width, implementation.width) /
+    Math.min(design.width, implementation.width)
+  return portrait && widthRatio <= 1.15 ? 'responsive' : 'width-normalized'
+}
 
 function assertAlignment(alignment) {
   if (!SUPPORTED_ALIGNMENTS.has(alignment)) {
@@ -59,23 +72,27 @@ export function getImageDimensions(image, label = 'image') {
 /**
  * Build the shared coordinate space used by the comparison engine.
  *
- * Width is the only normalization axis: the narrower input is enlarged to the
- * wider input's width, and its height follows from the same scale. Neither
- * input is ever reduced or stretched non-proportionally. Both normalized
- * images are then aligned to the requested vertical edge on a transparent
- * canvas tall enough for the longer image.
+ * In responsive mode retain both images' source pixels (same-DPR assumption).
+ * In width-normalized mode enlarge only the narrower input proportionally.
+ * Neither mode crops or stretches the original images non-uniformly.
  */
 export function buildWidthNormalization(
   designImage,
   implementationImage,
-  { maxPixels = MAX_NORMALIZED_PIXELS, alignment = 'top-left', anchors = null } = {},
+  { maxPixels = MAX_NORMALIZED_PIXELS, alignment = 'top-left', anchors = null,
+    scaleMode = 'width-normalized' } = {},
 ) {
   assertAlignment(alignment)
+  if (!SUPPORTED_SCALE_MODES.has(scaleMode)) {
+    throw new TypeError('scaleMode must be "width-normalized" or "responsive"')
+  }
   const design = getImageDimensions(designImage, 'designImage')
   const implementation = getImageDimensions(implementationImage, 'implementationImage')
   const targetWidth = Math.max(design.width, implementation.width)
-  const designScale = targetWidth / design.width
-  const implementationScale = targetWidth / implementation.width
+  const designScale = scaleMode === 'responsive' ? 1 : targetWidth / design.width
+  const implementationScale = scaleMode === 'responsive' ? 1 : targetWidth / implementation.width
+  const designWidth = Math.round(design.width * designScale)
+  const implementationWidth = Math.round(implementation.width * implementationScale)
   const designHeight = Math.max(1, Math.round(design.height * designScale))
   const implementationHeight = Math.max(
     1,
@@ -89,10 +106,10 @@ export function buildWidthNormalization(
   let implementationOffsetX = 0
   let implementationOffsetY = bottomAligned ? canvasHeight - implementationHeight : 0
   const normalizedAnchors = {
-    design: normalizeAnchor(anchors?.design, targetWidth, designHeight),
+    design: normalizeAnchor(anchors?.design, designWidth, designHeight),
     implementation: normalizeAnchor(
       anchors?.implementation,
-      targetWidth,
+      implementationWidth,
       implementationHeight,
     ),
   }
@@ -108,7 +125,7 @@ export function buildWidthNormalization(
     const deltaY = Math.round(designCenterY - implementationCenterY)
     const minX = Math.min(0, deltaX)
     const minY = Math.min(0, deltaY)
-    const maxX = Math.max(targetWidth, deltaX + targetWidth)
+    const maxX = Math.max(designWidth, deltaX + implementationWidth)
     const maxY = Math.max(designHeight, deltaY + implementationHeight)
 
     canvasWidth = maxX - minX
@@ -123,8 +140,8 @@ export function buildWidthNormalization(
   const overlapLeft = Math.max(designOffsetX, implementationOffsetX)
   const overlapTop = Math.max(designOffsetY, implementationOffsetY)
   const overlapRight = Math.min(
-    designOffsetX + targetWidth,
-    implementationOffsetX + targetWidth,
+    designOffsetX + designWidth,
+    implementationOffsetX + implementationWidth,
   )
   const overlapBottom = Math.min(
     designOffsetY + designHeight,
@@ -138,8 +155,8 @@ export function buildWidthNormalization(
   }
   const overlapArea = overlapRect.width * overlapRect.height
   const smallerImageArea = Math.min(
-    targetWidth * designHeight,
-    targetWidth * implementationHeight,
+    designWidth * designHeight,
+    implementationWidth * implementationHeight,
   )
   const sharedAreaRatio = overlapArea / Math.max(1, smallerImageArea)
 
@@ -150,25 +167,25 @@ export function buildWidthNormalization(
       ? (pixels / 1_000_000).toFixed(1)
       : 'an invalid number of'
     throw new RangeError(
-      `Width-normalized comparison canvas would be ${canvasWidth} × ${canvasHeight} ` +
+      `Comparison canvas would be ${canvasWidth} × ${canvasHeight} ` +
       `(${megapixels} MP), exceeding the 32 MP safety limit. ` +
       'Use screenshots with closer widths/aspect ratios or crop them before analysis.',
     )
   }
 
   return {
-    strategy: alignment === 'element'
-      ? 'match-wider-width-and-element-anchor'
-      : 'match-wider-width',
+    strategy: scaleMode === 'responsive' ? 'keep-native-pixels' : alignment === 'element'
+      ? 'match-wider-width-and-element-anchor' : 'match-wider-width',
+    scaleMode,
     alignment,
     verticalAlignment: alignment === 'element' ? 'element' : bottomAligned ? 'bottom' : 'top',
     background: 'transparent',
     targetWidth,
     designScale,
     implementationScale,
-    designWidth: targetWidth,
+    designWidth,
     designHeight,
-    implementationWidth: targetWidth,
+    implementationWidth,
     implementationHeight,
     designOffsetX,
     designOffsetY,
@@ -188,14 +205,14 @@ export function buildWidthNormalization(
 export function buildComparisonProfile(
   designImage,
   implementationImage,
-  { alignment = 'top-left', anchors = null } = {},
+  { alignment = 'top-left', anchors = null, scaleMode = 'width-normalized' } = {},
 ) {
   const design = getImageDimensions(designImage, 'designImage')
   const implementation = getImageDimensions(implementationImage, 'implementationImage')
   const normalization = buildWidthNormalization(
     designImage,
     implementationImage,
-    { alignment, anchors },
+    { alignment, anchors, scaleMode },
   )
   const implementationAspect = implementation.height / implementation.width
   const mobilePortrait = implementationAspect > 1.45 && implementation.width <= 1600
@@ -206,9 +223,11 @@ export function buildComparisonProfile(
   const heightsDiffer = normalization.designHeight !== normalization.implementationHeight
 
   return {
-    mode: widthsDiffer ? 'width-normalized' : 'same-width',
+    mode: widthsDiffer ? scaleMode : 'same-width',
     label: alignment === 'element'
       ? normalization.anchorReady ? '按选中元素对齐' : '等待框选对应元素'
+      : widthsDiffer && scaleMode === 'responsive'
+      ? `原像素对比 · ${normalization.verticalAlignment === 'bottom' ? '底部' : '顶部'}对齐`
       : widthsDiffer
       ? `等比放大至同宽${heightsDiffer ? ` · ${normalization.verticalAlignment === 'bottom' ? '底部' : '顶部'}对齐` : ''}`
       : heightsDiffer
@@ -225,7 +244,9 @@ export function buildComparisonProfile(
     designScale: normalization.designScale,
     implementationScale: normalization.implementationScale,
     designNormalizedHeight: normalization.designHeight,
+    designNormalizedWidth: normalization.designWidth,
     implementationNormalizedHeight: normalization.implementationHeight,
+    implementationNormalizedWidth: normalization.implementationWidth,
     designOffsetX: normalization.designOffsetX,
     designOffsetY: normalization.designOffsetY,
     implementationOffsetX: normalization.implementationOffsetX,

@@ -46,7 +46,8 @@ test('vertical alignment control invalidates stale results and reaches the worke
   assert.match(prototype, /aria-label="图片对齐方式"/)
   assert.match(prototype, /aria-pressed={selected}/)
   assert.match(prototype, /setFindings\(\[\]\)/)
-  assert.match(prototype, /alignment,\s*anchors,\s*signal: controller\.signal/)
+  assert.match(prototype, /alignment,\s*anchors,\s*scaleMode,\s*signal: controller\.signal/)
+  assert.match(prototype, /aria-label="截图比例"/)
   assert.match(rule('.alignment-mode-switch'), /display:\s*inline-flex/)
 })
 

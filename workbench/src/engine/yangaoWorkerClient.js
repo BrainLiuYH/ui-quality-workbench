@@ -21,6 +21,7 @@ export function analyzeImagesInWorker({
   implementationFile,
   alignment = 'top-left',
   anchors = null,
+  scaleMode = 'width-normalized',
   signal,
   onProgress,
 }) {
@@ -121,6 +122,7 @@ export function analyzeImagesInWorker({
           implementationImage: implementationBitmap,
           alignment,
           anchors,
+          scaleMode,
         }, [designBitmap, implementationBitmap])
         transferred = true
       } catch (error) {

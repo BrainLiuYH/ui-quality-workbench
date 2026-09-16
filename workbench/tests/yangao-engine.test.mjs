@@ -8,10 +8,50 @@ import {
   excludeStatusBarIssues,
   groupIssues,
 } from '../src/engine/yangaoEngine.js'
+import { suggestScaleMode } from '../src/engine/profile.js'
 import { analyzeImagesInWorker } from '../src/engine/yangaoWorkerClient.js'
 import { diffRasters } from '../src/engine/pixel-diff.js'
 
 const bitmapLike = (width, height) => ({ width, height })
+
+test('responsive mobile inputs retain source pixel sizes and crop only the shared viewport', () => {
+  const design = bitmapLike(1125, 2436)
+  const implementation = bitmapLike(1206, 2622)
+  assert.equal(suggestScaleMode(design, implementation), 'responsive')
+  const normalization = buildWidthNormalization(design, implementation, { scaleMode: 'responsive' })
+  assert.equal(normalization.designScale, 1)
+  assert.equal(normalization.implementationScale, 1)
+  assert.equal(normalization.designWidth, 1125)
+  assert.equal(normalization.implementationWidth, 1206)
+  assert.equal(normalization.canvasWidth, 1206)
+  assert.deepEqual(normalization.overlapRect, { x: 0, y: 0, width: 1125, height: 2436 })
+  const profile = buildComparisonProfile(design, implementation, { scaleMode: 'responsive' })
+  assert.equal(profile.mode, 'responsive')
+  assert.equal(profile.designNormalizedWidth, 1125)
+  assert.equal(profile.implementationNormalizedWidth, 1206)
+
+  const bottom = buildWidthNormalization(design, implementation, {
+    scaleMode: 'responsive', alignment: 'bottom-left',
+  })
+  assert.equal(bottom.designOffsetY, 186)
+  assert.equal(bottom.implementationOffsetY, 0)
+  assert.equal(bottom.overlapRect.y, 186)
+  assert.equal(bottom.overlapRect.height, 2436)
+})
+
+test('responsive element anchors retain unequal source widths without cropping the preview canvas', () => {
+  const normalization = buildWidthNormalization(bitmapLike(100, 160), bitmapLike(110, 170), {
+    scaleMode: 'responsive', alignment: 'element',
+    anchors: {
+      design: { x: 12, y: 30, width: 20, height: 20 },
+      implementation: { x: 25, y: 38, width: 20, height: 20 },
+    },
+  })
+  assert.deepEqual(normalization.anchorDelta, { x: -13, y: -8 })
+  assert.equal(normalization.canvasWidth, 113)
+  assert.equal(normalization.canvasHeight, 170)
+  assert.equal(normalization.overlapRect.width, 97)
+})
 
 test('buildComparisonProfile exposes the deterministic max-width strategy', () => {
   const original = buildComparisonProfile(bitmapLike(1440, 900), bitmapLike(1440, 900))
