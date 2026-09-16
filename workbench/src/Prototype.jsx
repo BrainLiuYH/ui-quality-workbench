@@ -815,6 +815,15 @@ function DetailPanel({ finding, findings, implementationSource, comparisonProfil
         <section className="detail-section evidence-section">
           <div className="section-heading"><strong>对应区域</strong><span>蓝框是检测位置</span></div>
           <EvidenceCrop finding={finding} source={implementationSource} profile={comparisonProfile} />
+          {finding.members?.some((member) => member.measurement) && <details className="measurement-details">
+            <summary>查看测量依据</summary>
+            <p>数值为对齐后的截图像素，不代表字号、CSS 尺寸或模糊参数。</p>
+            {finding.members.filter((member) => member.measurement).map((member, index) => <div className="measurement-item" key={`${member.type}-${index}`}>
+              <strong>{member.type} · {member.element}</strong>
+              <span>设计：{member.design_value}</span>
+              <span>实现：{member.implementation_value}</span>
+            </div>)}
+          </details>}
         </section>
         <section className="detail-section form-section">
           <label className="category-select-field">问题类型
@@ -1085,7 +1094,8 @@ function ExportDialog({ auditName, findings, sources, profile, onClose, onToast 
       const metadata = {
         audit: auditName,
         exportedAt: new Date().toISOString(),
-        engine: "yangao@beac836ba3c81b9a1d40bac8fe75af08444ab742",
+        engine: "workbench-component-evidence@1",
+        pixelEngineBase: "yangao@beac836ba3c81b9a1d40bac8fe75af08444ab742",
         comparisonProfile: profile,
         sources: {
           design: sources.design && { name: sources.design.name, type: sources.design.sourceType, width: sources.design.width, height: sources.design.height, sourceUrl: sources.design.sourceUrl || undefined },

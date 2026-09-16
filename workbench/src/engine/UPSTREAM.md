@@ -31,3 +31,10 @@ than upstream behavior: max-width-only normalization, the input-comparability
 gate in `comparability.js`, alpha-aware missing-region handling, conservative
 role/classification thresholds, neutral localized-content labels, and the
 human-review policy that suppresses findings for low-comparability inputs.
+
+`component-diff.js` and `bar-outline.js` are workbench-owned component evidence
+passes. They match complete foreground shapes and refine paired outlines at
+higher resolution, retain independent sub-issues, and suppress contradictory
+coarse classifications. They do not perform OCR or infer font/CSS parameters.
+Exports identify this pipeline as `workbench-component-evidence@1` while
+retaining the fixed upstream pixel-engine attribution separately.

@@ -5,6 +5,7 @@
 
 import { groupIssues } from './group-issues.js'
 import { diffRasters } from './pixel-diff.js'
+import { compareComponents, reconcileComponentIssues } from './component-diff.js'
 import { assessComparability } from './comparability.js'
 import {
   MAX_NORMALIZED_PIXELS,
@@ -240,11 +241,42 @@ export async function analyzeImages({
     onProgress,
   })
 
+  // Measure complete foreground contours at native resolution where feasible.
+  // The coarse raster scan is retained for coverage, not typography metrics.
+  // Bound memory and total work on very large exports.
+  const componentRatio = Math.min(1, Math.sqrt(4_000_000 / (analysisRect.width * analysisRect.height)))
+  const componentWidth = Math.max(1, Math.round(analysisRect.width * componentRatio))
+  const componentHeight = Math.max(1, Math.round(analysisRect.height * componentRatio))
+  const componentRaster = (image, sourceWidth, sourceHeight, offsetX, offsetY) => readRaster(
+    image, componentWidth, componentHeight,
+    Math.round(sourceWidth * componentRatio), Math.round(sourceHeight * componentRatio),
+    Math.round((offsetX - analysisRect.x) * componentRatio), Math.round((offsetY - analysisRect.y) * componentRatio),
+  )
+  await yieldToHost(signal)
+  const componentResult = await compareComponents({
+    designPixels: componentRaster(designImage, normalization.designWidth, normalization.designHeight, normalization.designOffsetX, normalization.designOffsetY),
+    implementationPixels: componentRaster(implementationImage, normalization.implementationWidth, normalization.implementationHeight, normalization.implementationOffsetX, normalization.implementationOffsetY),
+    width: componentWidth,
+    height: componentHeight,
+    outputWidth: analysisRect.width,
+    outputHeight: analysisRect.height,
+    profile: analysisProfile,
+    signal,
+  })
+
   throwIfAborted(signal)
   reportProgress(onProgress, 'group', 96)
   const profile = { ...baseProfile, ...diff.metrics, comparability, analysisRect }
-  const translatedIssues = diff.issues.map((issue) => ({
+  const translatedIssues = reconcileComponentIssues(diff.issues, componentResult).map((issue) => ({
     ...issue,
+    ...(issue.measurement ? { measurement: {
+      ...issue.measurement,
+      ...Object.fromEntries(['designBox', 'implementationBox'].filter((key) => issue.measurement[key]).map((key) => [key, {
+        ...issue.measurement[key],
+        x: issue.measurement[key].x + analysisRect.x,
+        y: issue.measurement[key].y + analysisRect.y,
+      }])),
+    } } : {}),
     box: {
       ...issue.box,
       x: issue.box.x + analysisRect.x,

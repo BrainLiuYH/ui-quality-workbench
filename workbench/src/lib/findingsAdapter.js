@@ -260,6 +260,11 @@ export function adaptYangaoGroups(groups = [], context = {}) {
       const bottomBarPosition = members.find((member) => member.element === '底部操作栏外框');
       const bottomBarBackground = members.find((member) => member.element === '底部操作栏背景质感');
       const lightCard = members.some((member) => member.element === '浅色卡片外框');
+      const componentCopy = members.find((member) => member.friendlyTitle);
+      const componentTitle = componentCopy && (types.length > 1
+        ? `${members.some((member) => member.element === '匹配的横向控件') ? '这个控件' : members.some((member) => member.element?.startsWith('底部操作栏')) ? '底部操作栏外框' : members.some((member) => member.element === '匹配的文字行') ? '这行文字' : '这个组件'}有多处差异`
+        : componentCopy.friendlyTitle);
+      const componentSummary = unique(members.map((member) => member.friendlySummary)).join(' ');
       const type = primaryType(types);
       const copy = copyByType[type] || copyByType.内容;
       const presence = pagePresence(group);
@@ -295,6 +300,12 @@ export function adaptYangaoGroups(groups = [], context = {}) {
         bbox,
         types,
         members,
+        ...(componentCopy ? {
+          title: componentTitle,
+          summary: componentSummary,
+          evidence: types.map((type) => copyByType[type]?.delta || type).join(' / '),
+          delta: flatAbsence ? '内容缺失' : types.map((type) => copyByType[type]?.delta || type).join(' / '),
+        } : {}),
         technical: {
           location: `x ${bbox.x}px，y ${bbox.y}px，${bbox.width} × ${bbox.height}px`,
           method: "像素与边缘启发式",

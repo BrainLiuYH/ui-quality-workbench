@@ -791,6 +791,10 @@ th:last-child { width: 84px; }
 .section-heading span { color: var(--ink-3); font-size: 10px; }
 .evidence-crop { height: 90px; border: 1px solid var(--line); border-radius: 8px; background: #f7f9fd; display: flex; align-items: center; overflow: hidden; }
 .evidence-crop canvas { width: 100%; height: 100%; display: block; }
+.measurement-details { margin-top: 12px; font-size: 12px; color: var(--text-muted, #64748b); }
+.measurement-details summary { cursor: pointer; color: var(--text, #17233a); }
+.measurement-details p { line-height: 1.6; }
+.measurement-item { display: grid; gap: 5px; padding: 10px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
 .crop-window { width: 100%; height: 64px; padding-left: 9px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: #fff; display: grid; grid-template-columns: auto 1fr 39px 92px; align-items: center; gap: 5px; font-size: 10px; }
 .crop-window > strong { font-size: 12px; }
 .crop-window > button { align-self: stretch; border: 0; background: var(--brand); color: #fff; font-size: 10px; }

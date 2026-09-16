@@ -280,7 +280,7 @@ function largestLightCard(data, width, height) {
 // central scan avoids the selected tab at the left and most icon artwork; two
 // matching contours are required so a single media/card edge is not mistaken
 // for a navigation bar.
-function bottomBarBounds(data, width, height) {
+export function bottomBarBounds(data, width, height) {
   if (width < 120 || height < 240) return null
   const left = Math.round(width * 0.28)
   const right = Math.round(width * 0.78)
@@ -1199,6 +1199,7 @@ export async function diffRasters({
         rawIssues.push({
           type: '位置',
           element: '底部操作栏外框',
+          containerShift: Math.round((implementationBar.top - designBar.top) * scaleY),
           severity: '中等',
           score: 58,
           componentEvidence: true,
@@ -1269,6 +1270,7 @@ export async function diffRasters({
       rawIssues.push({
         type: '位置',
         element: '浅色卡片外框',
+        containerShift: Math.round(verticalShift * scaleY),
         severity: '中等',
         score: 55,
         componentEvidence: true,

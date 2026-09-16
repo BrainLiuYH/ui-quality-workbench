@@ -229,6 +229,9 @@ function issueGroupMatch(aIssue, bIssue, dimensions) {
   // and turn its actionable result back into a page-sized annotation.
   if (aIssue.componentEvidence || bIssue.componentEvidence ||
     aIssue.backgroundEvidence || bIssue.backgroundEvidence) {
+    if (aIssue.componentId || bIssue.componentId) {
+      return Boolean(aIssue.componentId && aIssue.componentId === bIssue.componentId)
+    }
     return Boolean(aIssue.componentEvidence && bIssue.componentEvidence &&
       aIssue.element === bIssue.element) ||
       Boolean(aIssue.backgroundEvidence && bIssue.backgroundEvidence)
