@@ -91,3 +91,53 @@ export function captureWebPage({ url, width = 1440, height = 1024, waitMs = 1500
     { signal },
   );
 }
+
+async function requestDesktopAction(path, payload = {}) {
+  const response = await bridgeFetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return response.json();
+}
+
+export function launchVideoDownloader(url = "") {
+  return requestDesktopAction("/api/apps/ydl/launch", { url });
+}
+
+export function openVideoDownloadFolder() {
+  return requestDesktopAction("/api/apps/ydl/folder");
+}
+
+export function chooseVideoDownloadFolder(directory) {
+  return requestDesktopAction("/api/video/directory", { directory });
+}
+
+export function listVideoDirectories(directory = "") {
+  return requestDesktopAction("/api/video/directories", { directory });
+}
+
+export function checkVideoEnvironment() {
+  return requestDesktopAction("/api/video/check");
+}
+
+export function openVideoJobFolder(id) {
+  return requestDesktopAction("/api/video/folder", { id });
+}
+
+export function parseVideo(url) {
+  return requestDesktopAction("/api/video/parse", { url });
+}
+
+export function downloadVideo(parseId, quality) {
+  return requestDesktopAction("/api/video/download", { parseId, quality });
+}
+
+export function cancelVideoJob(id) {
+  return requestDesktopAction("/api/video/cancel", { id });
+}
+
+export async function getVideoJobs({ signal } = {}) {
+  const response = await bridgeFetch("/api/video/jobs", { signal });
+  return response.json();
+}

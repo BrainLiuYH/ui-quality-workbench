@@ -11,6 +11,7 @@ import json
 import math
 import mimetypes
 import os
+import plistlib
 import posixpath
 import re
 import secrets
@@ -54,6 +55,10 @@ CAPTURE_LIMITS = {
     "maxPixels": 25_000_000,
     "timeoutSeconds": 50,
 }
+YDL_CONFIG_PATH = Path.home() / "Library/Application Support/DesignToolbox/video-downloader.json"
+VIDEO_CONFIG_LOCK = threading.RLock()
+VIDEO_DEPENDENCY_CHECKS: Dict[str, dict] = {}
+VIDEO_SETUP_ERROR = ""
 
 
 class RequestError(Exception):
@@ -543,11 +548,274 @@ def capture_webpage(
     return png, browser
 
 
+def video_downloader_config() -> Dict[str, object]:
+    try:
+        payload = json.loads(YDL_CONFIG_PATH.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return {}
+        return payload
+    except (OSError, ValueError):
+        return {}
+
+
+def _read_video_config_for_update() -> dict:
+    # Never replace a damaged or unreadable existing preference file with defaults.
+    try:
+        config = json.loads(YDL_CONFIG_PATH.read_text(encoding="utf-8"))
+        if not isinstance(config, dict):
+            raise ValueError()
+        return config
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        raise RequestError(503, "无法读取下载设置，请检查本机配置文件；原设置未被覆盖。") from exc
+
+
+def _save_video_config(config: dict) -> None:
+    YDL_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=YDL_CONFIG_PATH.parent,
+                                         prefix=".video-settings-", delete=False) as handle:
+            temporary = Path(handle.name)
+            json.dump(config, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+        os.replace(temporary, YDL_CONFIG_PATH)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _video_tool_candidates(name: str, configured: object, resolved: dict) -> list[str]:
+    binary = {"yt-dlp": "yt-dlp", "Deno": "deno", "FFmpeg": "ffmpeg", "FFprobe": "ffprobe"}[name]
+    managed = Path.home() / "Library/Application Support/com.imsyy.yt-dlp-gui"
+    candidates = [configured]
+    if name == "FFprobe" and resolved.get("FFmpeg"):
+        candidates.append(str(Path(resolved["FFmpeg"]).with_name("ffprobe")))
+    candidates.extend([
+        shutil.which(binary),
+        str(managed / ("ffmpeg/" + binary if name in {"FFmpeg", "FFprobe"} else binary)),
+        "/opt/homebrew/bin/" + binary,
+        "/usr/local/bin/" + binary,
+        str(Path.home() / ".local/bin" / binary),
+        str(Path.home() / ".deno/bin" / binary),
+    ])
+    return list(dict.fromkeys(path for path in candidates if isinstance(path, str) and Path(path).is_absolute()))
+
+
+def initialize_video_downloader(payload: object = None) -> dict:
+    """Bootstrap once at service start; explicitly recheck after an installation."""
+    global VIDEO_SETUP_ERROR
+    if payload not in (None, {}):
+        raise RequestError(400, "环境检查不接受参数。")
+    with VIDEO_CONFIG_LOCK:
+        try:
+            config = _read_video_config_for_update()
+            previous = json.dumps(config, sort_keys=True)
+            if not config.get("downloadsDirectory"):
+                directory = Path.home() / "Downloads" / "设计工具箱"
+                directory.mkdir(parents=True, exist_ok=True)
+                config["downloadsDirectory"] = str(directory)
+            # An existing custom directory, including an offline disk, is never replaced.
+            tools = config.get("tools")
+            tools = dict(tools) if isinstance(tools, dict) else {}
+            for name in ("yt-dlp", "Deno", "FFmpeg", "FFprobe"):
+                diagnostic = {"available": False, "error": "未找到可执行文件"}
+                for candidate in _video_tool_candidates(name, tools.get(name), tools):
+                    if not Path(candidate).is_file() or not os.access(candidate, os.X_OK):
+                        continue
+                    try:
+                        flag = "-version" if name in {"FFmpeg", "FFprobe"} else "--version"
+                        arguments = [candidate, "--ignore-config", flag] if name == "yt-dlp" else [candidate, flag]
+                        result = subprocess.run(arguments, stdin=subprocess.DEVNULL,
+                                                capture_output=True, text=True, errors="replace",
+                                                timeout=45 if name == "yt-dlp" else 8, check=True)
+                        version = (result.stdout or result.stderr).splitlines()[0][:160]
+                        diagnostic = {"path": candidate, "available": True, "version": version}
+                        tools[name] = candidate
+                        break
+                    except (OSError, subprocess.SubprocessError, IndexError):
+                        diagnostic = {"path": candidate, "available": False, "error": "程序无法运行，请检查安装或系统架构"}
+                VIDEO_DEPENDENCY_CHECKS[name] = diagnostic
+            config["tools"] = tools
+            if json.dumps(config, sort_keys=True) != previous:
+                _save_video_config(config)
+            VIDEO_SETUP_ERROR = ""
+        except (OSError, RequestError) as exc:
+            VIDEO_SETUP_ERROR = exc.message if isinstance(exc, RequestError) else "无法创建下载目录或保存本机设置：" + str(exc)
+            raise RequestError(503, VIDEO_SETUP_ERROR) from exc
+    return {"videoDownloader": video_downloader_status(), "message": "已重新检查保存位置和下载依赖。"}
+
+
+def video_downloader_status() -> Dict[str, object]:
+    config = video_downloader_config()
+    app_path = config.get("appPath")
+    app = Path(app_path) if isinstance(app_path, str) and app_path else None
+    executable = app / "Contents/MacOS/yt-dlp-gui" if app else None
+    installed = bool(sys.platform == "darwin" and executable and executable.is_file() and os.access(executable, os.X_OK))
+    version = None
+    if installed:
+        try:
+            with (app / "Contents/Info.plist").open("rb") as handle:
+                metadata = plistlib.load(handle)
+            installed = metadata.get("CFBundleIdentifier") == "com.imsyy.yt-dlp-gui"
+            version = metadata.get("CFBundleShortVersionString")
+        except (OSError, ValueError, plistlib.InvalidFileException):
+            installed = False
+    paths = config.get("tools", {})
+    if not isinstance(paths, dict):
+        paths = {}
+    dependencies = []
+    for name in ("yt-dlp", "Deno", "FFmpeg", "FFprobe"):
+        path = paths.get(name)
+        available = bool(isinstance(path, str) and path and Path(path).is_file() and os.access(path, os.X_OK))
+        diagnostic = VIDEO_DEPENDENCY_CHECKS.get(name, {})
+        if diagnostic.get("path") == path:
+            available = available and diagnostic.get("available", False)
+        dependencies.append({"name": name, **diagnostic, "available": available})
+    directory = config.get("downloadsDirectory")
+    if not isinstance(directory, str) or not Path(directory).is_absolute():
+        directory = ""
+    directory_available = bool(directory and Path(directory).is_dir() and os.access(directory, os.W_OK))
+    return {
+        "installed": installed,
+        "ready": all(item["available"] for item in dependencies) and directory_available,
+        "version": version,
+        "dependencies": dependencies,
+        "downloadsDirectory": directory,
+        "directoryAvailable": directory_available,
+        "setupError": VIDEO_SETUP_ERROR,
+        "canChooseDirectory": True,
+    }
+
+
+def validate_video_launch_payload(payload: object) -> str:
+    if not isinstance(payload, dict) or set(payload) - {"url"}:
+        raise RequestError(400, "只接受视频链接。")
+    raw_url = payload.get("url", "")
+    if not isinstance(raw_url, str) or len(raw_url) > 8192:
+        raise RequestError(400, "请输入有效的视频链接。")
+    if any(ord(character) < 32 or ord(character) == 127 for character in raw_url):
+        raise RequestError(400, "视频链接包含无效字符。")
+    url = raw_url.strip()
+    if not url:
+        return ""
+    try:
+        parsed = urlsplit(url)
+        port = parsed.port
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or port == 0:
+            raise ValueError()
+    except ValueError as exc:
+        raise RequestError(400, "请粘贴完整的 http 或 https 视频页面链接。") from exc
+    return url
+
+
+def launch_video_downloader(payload: object) -> Dict[str, object]:
+    url = validate_video_launch_payload(payload)
+    status = video_downloader_status()
+    if not status["installed"]:
+        raise RequestError(503, "本机尚未安装或配置 yt-dlp GUI。")
+    if url and not status.get("directoryAvailable", True):
+        raise RequestError(503, "默认下载目录不可用，请检查保存磁盘是否已连接且可以写入。")
+    if url and not status["ready"]:
+        raise RequestError(503, "下载依赖尚未配置完成，请在 yt-dlp GUI 的设置中检查。")
+    config = video_downloader_config()
+    executable = Path(config["appPath"]) / "Contents/MacOS/yt-dlp-gui"
+    args = [str(executable)]
+    if status["downloadsDirectory"]:
+        args.extend(["--dir", status["downloadsDirectory"]])
+    if url:
+        args.extend(["--url", url])
+    # Launch the executable so Tauri's single-instance handler receives arguments
+    # even if the app is already running. Never evaluate a supplied URL in a shell.
+    try:
+        process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, start_new_session=True)
+        try:
+            result = process.wait(timeout=0.3)
+        except subprocess.TimeoutExpired:
+            result = None
+        if result not in (None, 0):
+            raise RequestError(502, "yt-dlp GUI 启动失败，请检查本机应用。")
+        if result is None:
+            threading.Thread(target=process.wait, daemon=True).start()
+    except OSError as exc:
+        raise RequestError(502, "无法启动 yt-dlp GUI，请检查应用是否可以打开。") from exc
+    return {"message": "已将链接发送到 yt-dlp GUI，请在应用内选择格式并下载。" if url else "已打开 yt-dlp GUI。"}
+
+
+def open_video_download_folder(payload: object) -> Dict[str, object]:
+    if payload != {}:
+        raise RequestError(400, "此操作不接受路径参数。")
+    directory = video_downloader_status()["downloadsDirectory"]
+    if not directory or not Path(directory).is_dir() or sys.platform != "darwin":
+        raise RequestError(503, "默认下载目录尚未配置。")
+    try:
+        subprocess.run(["/usr/bin/open", directory], check=True, timeout=10,
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RequestError(502, "无法打开下载文件夹。") from exc
+    return {"message": "已打开默认下载文件夹。"}
+
+
+def _video_directory(payload: object, *, allow_empty: bool = False) -> Path:
+    if not isinstance(payload, dict) or set(payload) != {"directory"}:
+        raise RequestError(400, "请选择保存文件夹。")
+    raw = payload["directory"]
+    if not isinstance(raw, str) or len(raw) > 4096 or any(ord(c) < 32 for c in raw):
+        raise RequestError(400, "文件夹路径无效。")
+    if allow_empty and not raw:
+        current = video_downloader_status()["downloadsDirectory"]
+        raw = current if current and Path(current).is_dir() else str(Path.home())
+    directory = Path(raw).expanduser()
+    if not raw or not directory.is_absolute() or not directory.is_dir():
+        raise RequestError(400, "请选择存在的本机文件夹，或检查磁盘是否已连接。")
+    return directory
+
+
+def list_video_directories(payload: object) -> dict:
+    directory = _video_directory(payload, allow_empty=True)
+    try:
+        folders = []
+        for child in directory.iterdir():
+            if not child.name.startswith(".") and child.is_dir():
+                folders.append({"name": child.name, "directory": str(child)})
+            if len(folders) > 500:
+                break
+        folders.sort(key=lambda item: item["name"].casefold())
+        shortcuts = [{"name": "个人文件夹", "directory": str(Path.home())},
+                     {"name": "下载", "directory": str(Path.home() / "Downloads")}]
+        if sys.platform == "darwin":
+            shortcuts.append({"name": "磁盘", "directory": "/Volumes"})
+        return {"directory": str(directory), "parent": str(directory.parent),
+                "folders": folders[:500], "truncated": len(folders) > 500,
+                "shortcuts": [item for item in shortcuts if Path(item["directory"]).is_dir()]}
+    except OSError as exc:
+        raise RequestError(403, "无法浏览此文件夹，请检查访问权限。") from exc
+
+
+def choose_video_download_folder(payload: object) -> dict:
+    directory = _video_directory(payload)
+    try:
+        # Browsing and cancelling never write preferences. Only explicit confirmation does.
+        with tempfile.TemporaryFile(dir=directory):
+            pass
+        with VIDEO_CONFIG_LOCK:
+            config = _read_video_config_for_update()
+            config["downloadsDirectory"] = str(directory)
+            _save_video_config(config)
+    except OSError as exc:
+        raise RequestError(503, "无法使用所选文件夹或保存设置，请检查写入权限。") from exc
+    return {"videoDownloader": video_downloader_status(),
+            "message": "保存位置已更新，仅影响之后开始的下载任务。"}
+
+
 def capabilities_payload() -> Dict[str, object]:
     browsers = discover_browsers()
     public_browsers = [{"id": browser["id"], "name": browser["name"]} for browser in browsers]
     return {
         "mode": "local-source-bridge",
+        "videoDownloader": video_downloader_status(),
         "figma": {
             "environmentToken": bool(os.environ.get("FIGMA_ACCESS_TOKEN", "").strip()),
             "acceptedUrlTypes": ["design", "file"],
@@ -563,6 +831,383 @@ def capabilities_payload() -> Dict[str, object]:
     }
 
 
+def video_engine_args() -> list[str]:
+    status = video_downloader_status()
+    if not all(item["available"] for item in status["dependencies"]):
+        raise RequestError(503, "下载依赖尚未配置完成。")
+    tools = video_downloader_config()["tools"]
+    return [
+        tools["yt-dlp"], "--ignore-config", "--no-playlist", "--playlist-items", "1",
+        "--js-runtimes", "deno:" + tools["Deno"],
+        "--ffmpeg-location", str(Path(tools["FFmpeg"]).parent),
+        "--socket-timeout", "20", "--retries", "2", "--extractor-retries", "1",
+        "--no-colors",
+    ]
+
+
+def summarize_video(info: object) -> Dict[str, object]:
+    if not isinstance(info, dict) or info.get("_type") in {"playlist", "multi_video"}:
+        raise RequestError(400, "请粘贴单个视频的链接，暂不支持整份播放列表。")
+    if info.get("is_live"):
+        raise RequestError(400, "暂不支持正在直播的视频，请在直播结束后下载。")
+    heights = set()
+    for item in info.get("formats") or []:
+        height = item.get("height") if isinstance(item, dict) else None
+        if isinstance(height, (int, float)) and math.isfinite(height) and 0 < height <= 16384:
+            heights.add(int(height))
+    qualities = [{"id": "best", "label": "最高画质（推荐）"}]
+    qualities.extend({"id": str(height), "label": "{}p".format(height)} for height in sorted(heights, reverse=True))
+    return {
+        "title": str(info.get("title") or "未命名视频")[:500],
+        "uploader": str(info.get("uploader") or info.get("channel") or "")[:200],
+        "duration": info.get("duration") if isinstance(info.get("duration"), (int, float)) else None,
+        "source": str(info.get("extractor_key") or info.get("extractor") or "")[:80],
+        "qualities": qualities,
+    }
+
+
+class VideoJobManager:
+    """Run fixed yt-dlp commands locally, with cancellable jobs and bounded history."""
+
+    ACTIVE = {"parsing", "downloading", "processing"}
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._jobs: Dict[str, dict] = {}
+        self._processes = BrowserProcessRegistry()
+        self._closed = False
+
+    def _public(self, job: dict) -> dict:
+        with self._lock:
+            return json.loads(json.dumps({key: value for key, value in job.items() if not key.startswith("_")}))
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return {"jobs": [self._public(job) for job in reversed(list(self._jobs.values()))]}
+
+    def open_folder(self, payload: object) -> dict:
+        if not isinstance(payload, dict) or set(payload) != {"id"} or not isinstance(payload["id"], str):
+            raise RequestError(400, "请选择已完成的下载任务。")
+        with self._lock:
+            job = self._jobs.get(payload["id"])
+            if not job or job["kind"] != "download" or job["status"] != "complete":
+                raise RequestError(409, "此下载任务尚未完成或已不在当前记录中。")
+            path = Path(job["filePath"])
+            directory = Path(job["directory"])
+        if not is_within_root(path.resolve(), directory.resolve()) or not path.is_file():
+            raise RequestError(404, "下载文件已移动、删除，或保存磁盘未连接。")
+        if sys.platform != "darwin":
+            raise RequestError(503, "当前打开文件夹功能仅支持 macOS。")
+        try:
+            subprocess.run(["/usr/bin/open", "-R", str(path)], check=True, timeout=10,
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise RequestError(502, "无法打开此任务的保存文件夹。") from exc
+        return {"message": "已在文件夹中显示下载的视频。"}
+
+    def _new(self, kind: str, url: str, **fields: object) -> dict:
+        with self._lock:
+            if self._closed:
+                raise RequestError(503, "本地下载服务正在关闭。")
+            if sum(job["status"] in self.ACTIVE for job in self._jobs.values()) >= 3:
+                raise RequestError(429, "已有 3 个任务正在运行，请稍后再试。")
+            while len(self._jobs) >= 30:
+                oldest = next((key for key, job in self._jobs.items() if job["status"] not in self.ACTIVE), None)
+                if oldest is None:
+                    break
+                del self._jobs[oldest]
+            job = {"id": secrets.token_hex(12), "kind": kind, "url": url,
+                   "status": "parsing" if kind == "parse" else "downloading",
+                   "createdAt": time.time(), "percent": None, **fields}
+            self._jobs[job["id"]] = job
+            return job
+
+    def _update(self, job: dict, **fields: object) -> None:
+        with self._lock:
+            if job["status"] != "cancelled":
+                job.update(fields)
+
+    def _spawn(self, job: dict, args: list[str], **kwargs: object) -> subprocess.Popen:
+        with self._lock:
+            if self._closed or job["status"] == "cancelled":
+                raise RequestError(409, "任务已取消。")
+            process = subprocess.Popen(args, stdin=subprocess.DEVNULL, start_new_session=True, **kwargs)
+            job["_process"] = process
+            if not self._processes.register(process):
+                _stop_browser_process(process)
+                raise RequestError(503, "本地下载服务正在关闭。")
+            return process
+
+    def _release(self, job: dict, process: Optional[subprocess.Popen]) -> None:
+        if process is not None:
+            if process.poll() is None:
+                _stop_browser_process(process)
+            self._processes.unregister(process)
+            for stream in (process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
+        with self._lock:
+            job.pop("_process", None)
+
+    @staticmethod
+    def _error_text(text: str) -> str:
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        errors = [line for line in lines if line.startswith("ERROR:")]
+        detail = "\n".join(errors or lines[-3:])[-1600:]
+        if "Sign in" in detail or "login" in detail.lower() or "cookies" in detail.lower():
+            return "来源平台要求登录验证，当前匿名下载不可用。\n" + detail
+        return detail or "下载引擎未能完成任务，请检查链接或网络后重试。"
+
+    def parse(self, payload: object) -> dict:
+        url = validate_video_launch_payload(payload)
+        if not url:
+            raise RequestError(400, "请先输入视频链接。")
+        args = video_engine_args()
+        job = self._new("parse", url)
+        threading.Thread(target=self._parse_worker, args=(job, args), daemon=True).start()
+        return {"job": self._public(job)}
+
+    def _parse_worker(self, job: dict, args: list[str]) -> None:
+        process = None
+        try:
+            with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
+                process = self._spawn(job, args + ["--skip-download", "--dump-single-json", "--", job["url"]],
+                                      stdout=output, stderr=errors)
+                try:
+                    code = process.wait(timeout=120)
+                except subprocess.TimeoutExpired:
+                    _stop_browser_process(process)
+                    raise RequestError(504, "解析超过两分钟，请检查网络或稍后重试。")
+                errors.seek(max(0, errors.tell() - 8192))
+                detail = errors.read(8192).decode("utf-8", errors="replace")
+                if code != 0:
+                    raise RequestError(502, self._error_text(detail))
+                if output.tell() > 32 * 1024 * 1024:
+                    raise RequestError(502, "视频信息过大，请使用单个视频链接。")
+                output.seek(0)
+                info = summarize_video(json.load(output))
+                self._update(job, status="ready", video=info)
+        except RequestError as exc:
+            self._update(job, status="error", error=exc.message)
+        except (OSError, ValueError) as exc:
+            self._update(job, status="error", error="解析失败：" + str(exc)[:500])
+        finally:
+            self._release(job, process)
+
+    def download(self, payload: object) -> dict:
+        if not isinstance(payload, dict) or set(payload) != {"parseId", "quality"}:
+            raise RequestError(400, "请选择已解析的视频和清晰度。")
+        parse_id, quality = payload["parseId"], payload["quality"]
+        if not isinstance(parse_id, str) or not isinstance(quality, str):
+            raise RequestError(400, "无效的下载选项。")
+        status = video_downloader_status()
+        if not status["directoryAvailable"]:
+            raise RequestError(503, "保存磁盘不可用，请连接磁盘并确认可以写入。")
+        args = video_engine_args()
+        with self._lock:
+            parsed = self._jobs.get(parse_id)
+            if not parsed or parsed["kind"] != "parse" or parsed["status"] != "ready":
+                raise RequestError(409, "视频信息已失效，请重新解析。")
+            choice = next((item for item in parsed["video"]["qualities"] if item["id"] == quality), None)
+            if choice is None:
+                raise RequestError(400, "请选择列表中的清晰度。")
+            if any(job["kind"] == "download" and job["url"] == parsed["url"] and job["status"] in self.ACTIVE
+                   for job in self._jobs.values()):
+                raise RequestError(409, "这个视频正在下载中。")
+            selector = "bv*+ba/b" if quality == "best" else "bv*[height<={0}]+ba/b[height<={0}]".format(int(quality))
+            job = self._new("download", parsed["url"], title=parsed["video"]["title"],
+                            quality=choice["label"], directory=status["downloadsDirectory"])
+        threading.Thread(target=self._download_worker, args=(job, args, selector), daemon=True).start()
+        return {"job": self._public(job)}
+
+    def _download_worker(self, job: dict, args: list[str], selector: str) -> None:
+        process = None
+        try:
+            directory = Path(job["directory"])
+            if not directory.is_dir() or not os.access(directory, os.W_OK):
+                raise RequestError(503, "保存磁盘已断开或无法写入。")
+            command = args + [
+                "--no-simulate", "--newline", "--progress", "--progress-delta", "0.5",
+                "--progress-template", "download:__DT_PROGRESS__%(progress)j",
+                "--progress-template", "postprocess:__DT_POST__%(progress)j",
+                "--print", "after_move:__DT_FILE__%(filepath)j",
+                "--no-overwrites", "--merge-output-format", "mp4",
+                "--remux-video", "mp4", "-f", selector,
+                "-P", str(directory), "-o", "%(title).160B [%(id)s].%(ext)s",
+                "--", job["url"],
+            ]
+            process = self._spawn(job, command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  text=True, encoding="utf-8", errors="replace")
+            tail = []
+            completed_path = None
+            for line in iter(lambda: process.stdout.readline(65536), ""):
+                line = line.strip()
+                if line.startswith("__DT_PROGRESS__"):
+                    try:
+                        progress = json.loads(line[len("__DT_PROGRESS__"):])
+                        downloaded = progress.get("downloaded_bytes") or 0
+                        total = progress.get("total_bytes") or progress.get("total_bytes_estimate") or 0
+                        percent = min(100, max(0, downloaded / total * 100)) if total > 0 else None
+                        self._update(job, percent=percent, speed=progress.get("speed"), eta=progress.get("eta"))
+                    except (ValueError, TypeError, ZeroDivisionError):
+                        pass
+                elif line.startswith("__DT_POST__"):
+                    self._update(job, status="processing", percent=None, speed=None, eta=None)
+                elif line.startswith("__DT_FILE__"):
+                    try:
+                        completed_path = Path(json.loads(line[len("__DT_FILE__"):])).resolve()
+                    except (ValueError, TypeError):
+                        pass
+                elif line:
+                    tail = (tail + [line])[-12:]
+            code = process.wait()
+            if code != 0:
+                raise RequestError(502, self._error_text("\n".join(tail)))
+            if (completed_path is None or not is_within_root(completed_path, directory.resolve())
+                    or not completed_path.is_file() or completed_path.stat().st_size == 0):
+                raise RequestError(502, "下载引擎已退出，但未找到完整的视频文件。")
+            self._release(job, process)
+            process = None
+            self._ensure_playable_video(job, completed_path)
+            self._update(job, status="complete", percent=100, filename=completed_path.name,
+                         filePath=str(completed_path), bytes=completed_path.stat().st_size, speed=None, eta=None)
+        except RequestError as exc:
+            self._update(job, status="error", error=exc.message)
+        except (OSError, ValueError) as exc:
+            self._update(job, status="error", error="下载失败：" + str(exc)[:500])
+        finally:
+            self._release(job, process)
+
+    def _probe_video(self, job: dict, path: Path) -> dict:
+        probe = video_downloader_config()["tools"]["FFprobe"]
+        process = None
+        try:
+            process = self._spawn(job, [
+                probe, "-v", "error", "-show_entries",
+                "stream=codec_type,codec_name,pix_fmt,profile,width,height:format=duration",
+                "-of", "json", str(path),
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                output, error = process.communicate(timeout=30)
+            except subprocess.TimeoutExpired:
+                raise RequestError(504, "视频完整性检查超时。")
+            if process.returncode != 0:
+                raise RequestError(502, "视频检查失败：" + error.decode("utf-8", errors="replace")[-600:])
+            info = json.loads(output)
+            streams = info.get("streams", [])
+            video = next((stream for stream in streams if stream.get("codec_type") == "video"), None)
+            audio = next((stream for stream in streams if stream.get("codec_type") == "audio"), None)
+            duration = float(info.get("format", {}).get("duration", 0))
+            if not video or not math.isfinite(duration) or duration <= 0:
+                raise RequestError(502, "输出文件缺少有效的视频画面或时长。")
+            return {"video": video, "audio": audio, "duration": duration}
+        except (ValueError, TypeError) as exc:
+            raise RequestError(502, "无法读取视频编码信息。") from exc
+        finally:
+            self._release(job, process)
+
+    @staticmethod
+    def _compatible_streams(info: dict) -> Tuple[bool, bool]:
+        video, audio = info["video"], info["audio"]
+        return (
+            video.get("codec_name") == "h264" and video.get("pix_fmt") == "yuv420p",
+            audio is None or (audio.get("codec_name") == "aac" and audio.get("profile") == "LC"),
+        )
+
+    def _ensure_playable_video(self, job: dict, source: Path) -> None:
+        """Validate codecs, convert only incompatible streams, retain original bytes."""
+        self._update(job, status="processing", stage="正在检查播放兼容性", percent=None, speed=None, eta=None)
+        info = self._probe_video(job, source)
+        video_ok, audio_ok = self._compatible_streams(info)
+        if video_ok and audio_ok:
+            return
+        self._update(job, stage="正在转换为兼容视频", percent=0)
+        executable = video_downloader_config()["tools"]["FFmpeg"]
+        handle, raw_path = tempfile.mkstemp(prefix=".video-compatible-", suffix=".mp4", dir=source.parent)
+        os.close(handle)
+        temporary = Path(raw_path)
+        process = None
+        try:
+            command = [
+                executable, "-nostdin", "-hide_banner", "-loglevel", "error", "-xerror",
+                "-i", str(source), "-map", "0:v:0", "-map", "0:a:0?",
+            ]
+            if video_ok:
+                command.extend(["-c:v", "copy"])
+            else:
+                command.extend(["-c:v", "libx264", "-preset", "fast", "-crf", "18",
+                                "-pix_fmt", "yuv420p", "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2"])
+            command.extend(["-c:a", "copy"] if audio_ok else ["-c:a", "aac", "-profile:a", "aac_low", "-b:a", "192k"])
+            command.extend(["-movflags", "+faststart", "-progress", "pipe:1", "-nostats", "-y", str(temporary)])
+            process = self._spawn(job, command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  text=True, encoding="utf-8", errors="replace")
+            tail = []
+            for line in iter(lambda: process.stdout.readline(8192), ""):
+                line = line.strip()
+                if line.startswith("out_time_us="):
+                    try:
+                        percent = min(99, max(0, float(line.split("=", 1)[1]) / 1_000_000 / info["duration"] * 100))
+                        self._update(job, percent=percent)
+                    except ValueError:
+                        pass
+                elif line:
+                    tail = (tail + [line])[-12:]
+            if process.wait() != 0:
+                raise RequestError(502, "兼容格式转换失败，原文件已保留。\n" + "\n".join(tail)[-1000:])
+            self._release(job, process)
+            process = None
+            converted = self._probe_video(job, temporary)
+            if (not all(self._compatible_streams(converted))
+                    or bool(info["audio"]) != bool(converted["audio"])
+                    or abs(converted["duration"] - info["duration"]) > max(0.25, info["duration"] * 0.01)):
+                raise RequestError(502, "转换后的编码或时长检查未通过，原文件已保留。")
+            # Commit only a verified conversion; cancellation never replaces the source.
+            with self._lock:
+                if self._closed or job["status"] == "cancelled":
+                    raise RequestError(409, "任务已取消，原文件已保留。")
+                backup_dir = source.parent / ".originals"
+                backup_dir.mkdir(exist_ok=True)
+                backup = backup_dir / (source.stem + "-" + secrets.token_hex(6) + source.suffix)
+                source.rename(backup)
+                try:
+                    temporary.replace(source)
+                except OSError:
+                    backup.rename(source)
+                    raise
+                job["originalPath"] = str(backup)
+                job["converted"] = True
+        finally:
+            self._release(job, process)
+            temporary.unlink(missing_ok=True)
+
+    def cancel(self, payload: object) -> dict:
+        if not isinstance(payload, dict) or set(payload) != {"id"} or not isinstance(payload["id"], str):
+            raise RequestError(400, "无效的任务。")
+        with self._lock:
+            job = self._jobs.get(payload["id"])
+            if not job:
+                raise RequestError(404, "任务不存在。")
+            if job["status"] in self.ACTIVE:
+                job["status"] = "cancelled"
+            process = job.get("_process")
+        if process is not None:
+            _stop_browser_process(process)
+        return {"job": self._public(job)}
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            for job in self._jobs.values():
+                if job["status"] in self.ACTIVE:
+                    job["status"] = "cancelled"
+        self._processes.close()
+
+
+POST_ENDPOINTS = {"/api/figma/import", "/api/capture", "/api/apps/ydl/launch", "/api/apps/ydl/folder",
+                  "/api/video/parse", "/api/video/download", "/api/video/cancel",
+                  "/api/video/check", "/api/video/directory", "/api/video/folder", "/api/video/directories"}
+
+
 class WorkbenchServer(http.server.ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -576,14 +1221,17 @@ class WorkbenchServer(http.server.ThreadingHTTPServer):
     ) -> None:
         self.access_token = access_token or secrets.token_urlsafe(32)
         self.browser_processes = BrowserProcessRegistry()
+        self.video_jobs = VideoJobManager()
         super().__init__(server_address, handler_class)
 
     def shutdown(self) -> None:
         self.browser_processes.close()
+        self.video_jobs.close()
         super().shutdown()
 
     def server_close(self) -> None:
         self.browser_processes.close()
+        self.video_jobs.close()
         super().server_close()
 
 
@@ -619,7 +1267,7 @@ class WorkbenchHandler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         request_path = unquote(urlsplit(self.path).path)
-        if request_path not in {"/api/figma/import", "/api/capture"}:
+        if request_path not in POST_ENDPOINTS:
             self._method_not_allowed()
             return
         if not self._host_allowed():
@@ -635,6 +1283,24 @@ class WorkbenchHandler(http.server.BaseHTTPRequestHandler):
             payload = self._read_json_body()
             if request_path == "/api/figma/import":
                 self._handle_figma_import(payload)
+            elif request_path == "/api/apps/ydl/launch":
+                self._send_json(200, launch_video_downloader(payload))
+            elif request_path == "/api/apps/ydl/folder":
+                self._send_json(200, open_video_download_folder(payload))
+            elif request_path == "/api/video/parse":
+                self._send_json(202, self.server.video_jobs.parse(payload))
+            elif request_path == "/api/video/download":
+                self._send_json(202, self.server.video_jobs.download(payload))
+            elif request_path == "/api/video/cancel":
+                self._send_json(200, self.server.video_jobs.cancel(payload))
+            elif request_path == "/api/video/check":
+                self._send_json(200, initialize_video_downloader(payload))
+            elif request_path == "/api/video/directories":
+                self._send_json(200, list_video_directories(payload))
+            elif request_path == "/api/video/directory":
+                self._send_json(200, choose_video_download_folder(payload))
+            elif request_path == "/api/video/folder":
+                self._send_json(200, self.server.video_jobs.open_folder(payload))
             else:
                 self._handle_capture(payload)
         except RequestError as exc:
@@ -654,7 +1320,7 @@ class WorkbenchHandler(http.server.BaseHTTPRequestHandler):
 
     def _unsupported_method(self) -> None:
         request_path = unquote(urlsplit(self.path).path)
-        allowed = "POST" if request_path in {"/api/figma/import", "/api/capture"} else "GET, HEAD"
+        allowed = "POST" if request_path in POST_ENDPOINTS else "GET, HEAD"
         self.send_response(405)
         self.send_header("Allow", allowed)
         self.send_header("Content-Length", "0")
@@ -672,11 +1338,12 @@ class WorkbenchHandler(http.server.BaseHTTPRequestHandler):
             return
 
         request_path = unquote(urlsplit(self.path).path)
-        if request_path == "/api/capabilities":
+        if request_path in {"/api/capabilities", "/api/video/jobs"}:
             if not self._token_allowed():
                 self._json_error(401, "Invalid or missing workbench token", include_body=include_body)
                 return
-            self._send_json(200, capabilities_payload(), include_body=include_body)
+            payload = self.server.video_jobs.snapshot() if request_path == "/api/video/jobs" else capabilities_payload()
+            self._send_json(200, payload, include_body=include_body)
             return
         if request_path == "/health":
             self._send_json(200, {"status": "ok", "mode": "local-source-bridge"}, include_body=include_body)
@@ -985,6 +1652,11 @@ def main() -> int:
         return 1
 
     server.verbose = args.verbose
+    try:
+        initialize_video_downloader()
+    except RequestError as exc:
+        # A video setup failure must not prevent the other toolbox modules from starting.
+        emit({"event": "video-setup", "status": "error", "error": exc.message}, stream=sys.stderr)
     port = server.server_address[1]
     url = "http://{}:{}/#token={}".format(HOST, port, quote(server.access_token, safe=""))
 

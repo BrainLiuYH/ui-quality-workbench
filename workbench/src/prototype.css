@@ -902,6 +902,85 @@ textarea:hover { border-color: #b9c8da; }
   line-height: 32px;
 }
 
+.video-downloader-content { max-width: 1080px; }
+.video-app-status { display: flex; align-items: center; gap: 7px; color: var(--ink-2); white-space: nowrap; font-size: 13px; }
+.video-app-status.is-ready { color: #19734e; }
+.video-download-card { margin-top: 24px; padding: 26px 30px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; }
+.video-download-card h2 { margin: 0 0 16px; font-size: 17px; }
+.video-download-card input { width: 100%; min-width: 0; min-height: 46px; padding: 11px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); font: inherit; font-size: 13px; }
+.video-download-card button { min-height: 36px; padding: 8px 13px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink-2); font: inherit; font-size: 12px; cursor: pointer; }
+.video-download-card button.primary-button { color: white; background: var(--brand); border-color: var(--brand); }
+.video-download-card button:disabled { opacity: .5; cursor: not-allowed; }
+.video-download-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+.video-download-hint { margin: 16px 0 0; color: var(--ink-3); font-size: 12px; line-height: 1.8; }
+.video-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.video-card-heading h2 { margin-bottom: 5px; }
+.video-card-heading p { margin: 0; color: var(--ink-3); font-size: 12px; }
+.video-dependencies { display: flex; gap: 10px 20px; flex-wrap: wrap; margin: 22px 0; color: var(--ink-2); font-size: 12px; }
+.video-dependencies > span { display: inline-flex; align-items: center; gap: 6px; }
+.video-download-folder { display: flex; justify-content: space-between; align-items: center; gap: 16px; border-top: 1px solid var(--line); padding-top: 18px; }
+.video-download-folder > div { min-width: 0; }
+.video-download-folder span { color: var(--ink-3); font-size: 11px; }
+.video-download-folder p { margin: 6px 0 0; overflow-wrap: anywhere; color: var(--ink-2); font-size: 12px; }
+.video-download-folder button { flex-shrink: 0; }
+.video-folder-actions, .video-task-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; flex-wrap: wrap; }
+.video-dependency-help { margin-top: 16px; line-height: 1.8; }
+.video-dependency-help code { display: block; padding: 10px 12px; background: var(--canvas); border: 1px solid var(--line); border-radius: 6px; overflow-wrap: anywhere; }
+.video-dependency-help a { color: var(--brand); }
+.video-folder-browser { gap: 12px; }
+.video-folder-browser p { margin: 0; color: var(--ink-3); font-size: 12px; line-height: 1.7; }
+.video-folder-browser button { display: inline-flex; align-items: center; gap: 8px; min-height: 34px; padding: 7px 12px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--ink-2); font: inherit; font-size: 12px; cursor: pointer; }
+.video-folder-browser button:disabled { opacity: .5; cursor: not-allowed; }
+.video-folder-shortcuts, .video-folder-path { display: flex; gap: 8px; }
+.video-folder-path input { min-width: 0; flex: 1; min-height: 36px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; font: inherit; font-size: 12px; }
+.video-folder-parent { justify-self: start; }
+.video-folder-list { height: min(260px, 30vh); overflow: auto; border: 1px solid var(--line); border-radius: 7px; padding: 6px; }
+.video-folder-list button { display: flex; width: 100%; border: 0; text-align: left; overflow-wrap: anywhere; }
+.video-folder-list button:hover { background: var(--brand-softer); color: var(--brand); }
+.video-folder-list > p { padding: 10px; }
+.video-folder-selected { overflow-wrap: anywhere; }
+.video-download-message { color: #19734e; background: #edf8f2; border-radius: 8px; padding: 12px; font-size: 13px; line-height: 1.6; }
+.video-download-message.is-error { color: #9a402c; background: #fff0ec; }
+.video-project-link { margin-top: 14px; display: inline-flex; align-items: center; gap: 5px; color: var(--brand); font-size: 12px; }
+.video-input-row { display: flex; align-items: stretch; gap: 12px; }
+.video-input-row input { flex: 1; }
+.video-input-row button { flex-shrink: 0; min-width: 112px; }
+.video-parse-state { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 18px; color: var(--ink-2); font-size: 13px; }
+.video-result { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 24px; }
+.video-result-summary { display: flex; align-items: center; gap: 14px; }
+.video-result-summary > div { min-width: 0; }
+.video-result-icon { display: grid; place-items: center; width: 54px; height: 54px; flex-shrink: 0; border-radius: 10px; background: var(--brand-softer); color: var(--brand); }
+.video-result h3, .video-task h3 { margin: 0; font-size: 15px; line-height: 1.6; overflow-wrap: anywhere; }
+.video-result-summary p, .video-task-header p { margin: 5px 0 0; font-size: 12px; color: var(--ink-3); }
+.video-quality-row { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 22px; font-size: 13px; }
+.video-quality-row select { flex: 1; min-width: 120px; min-height: 38px; max-width: 320px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink-2); font: inherit; }
+.video-tasks { margin-top: 6px; }
+.video-task { padding: 20px 0; border-bottom: 1px solid var(--line); }
+.video-task:last-child { border-bottom: 0; padding-bottom: 0; }
+.video-task-header { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.video-task-header > div { min-width: 0; }
+.video-task-header button { flex-shrink: 0; }
+.video-task progress { display: block; width: 100%; height: 7px; accent-color: var(--brand); margin-top: 15px; }
+.video-task-progress, .video-task-file, .video-task-count { font-size: 12px; color: var(--ink-3); line-height: 1.7; overflow-wrap: anywhere; }
+.video-task-progress { margin-bottom: 0; }
+.video-task-file { margin-bottom: 0; }
+.video-complete-icon { color: #19734e; flex-shrink: 0; }
+.video-environment { margin-top: 20px; font-size: 12px; color: var(--ink-2); }
+.video-environment summary { cursor: pointer; }
+.video-environment .video-dependencies { margin: 15px 0 0; }
+.video-environment .video-project-link { margin-top: 12px; }
+.video-download-message { white-space: pre-wrap; overflow-wrap: anywhere; }
+.video-spinner { animation: video-spin 1s linear infinite; }
+@keyframes video-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .video-spinner { animation: none; } }
+@media (max-width: 780px) {
+  .video-downloader-content .tool-sharing-header { grid-template-columns: 1fr; gap: 18px; padding: 24px; }
+  .video-download-card { padding: 22px; }
+  .video-download-folder { align-items: flex-start; flex-direction: column; }
+  .video-input-row { flex-direction: column; }
+  .video-task-header { flex-wrap: wrap; }
+}
+
 .tool-sharing-section { margin-top: 34px; }
 .tool-sharing-section__heading { display: flex; align-items: end; justify-content: space-between; margin-bottom: 16px; }
 .tool-sharing-section__heading h2 { margin: 0; font-size: 18px; line-height: 26px; }

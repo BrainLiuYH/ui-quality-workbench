@@ -34,6 +34,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { sharedTools } from "./sharedTools.js";
+import { VideoDownloaderPage } from "./VideoDownloaderPage.jsx";
 import { toolInstallPrompts } from "./toolInstallPrompts.js";
 import { adaptYangaoGroups } from "./lib/findingsAdapter.js";
 import { FINDING_CATEGORIES, FINDING_CATEGORY_LABELS } from "./lib/findingCategories.js";
@@ -1255,6 +1256,7 @@ export function Prototype() {
   const query = new URLSearchParams(window.location.search);
   const qaMode = query.has("qa");
   const [activeView, setActiveView] = useState("audit");
+  const [videoUrl, setVideoUrl] = useState("");
   const [findings, setFindings] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [mode, setMode] = useState("side");
@@ -1779,6 +1781,7 @@ export function Prototype() {
             <button type="button" onClick={() => openView("audit")}><AppIcon icon={House} />工作台</button>
             <button type="button" className={activeView === "audit" ? "is-active" : ""} aria-current={activeView === "audit" ? "page" : undefined} onClick={() => openView("audit")}><AppIcon icon={ListChecks} weight={activeView === "audit" ? "fill" : "regular"} />UI 走查</button>
             <button type="button" className={activeView === "tools" ? "is-active" : ""} aria-current={activeView === "tools" ? "page" : undefined} onClick={() => openView("tools")}><AppIcon icon={ShareNetwork} weight={activeView === "tools" ? "fill" : "regular"} />工具分享</button>
+            <button type="button" className={activeView === "video" ? "is-active" : ""} aria-current={activeView === "video" ? "page" : undefined} onClick={() => openView("video")}><AppIcon icon={DownloadSimple} weight={activeView === "video" ? "fill" : "regular"} />视频下载</button>
             <button type="button" className="is-disabled" title="后续版本开放" aria-disabled="true"><AppIcon icon={CursorClick} />交互体验审查<span>稍后</span></button>
           </div>
           <div className="nav-divider" />
@@ -1786,7 +1789,7 @@ export function Prototype() {
           <button type="button" className={`history-item ${activeView === "audit" ? "is-active" : ""}`} title={auditName} onClick={() => openView("audit")}><span className="history-dot" /><span className="history-item-label">{auditName}</span></button>
           <div className="sidebar-footer"><Info size={15} /><span>V1 · 本地模式</span></div>
         </nav>
-        {activeView === "tools" ? <ToolSharingPage tools={sharedTools} onOpen={(toolId) => setModal({ type: "tool-detail", toolId })} onInstall={(toolId) => setModal({ type: "tool-install", toolId })} /> : (
+        {activeView === "tools" ? <ToolSharingPage tools={sharedTools} onOpen={(toolId) => setModal({ type: "tool-detail", toolId })} onInstall={(toolId) => setModal({ type: "tool-install", toolId })} /> : activeView === "video" ? <VideoDownloaderPage url={videoUrl} onUrlChange={setVideoUrl} Dialog={Dialog} /> : (
         <main className="workspace">
           <header className="workspace-toolbar">
             <div className="audit-title">{editingTitle ? <input autoFocus value={auditNameDraft} onChange={(event) => setAuditNameDraft(event.target.value)} onBlur={() => finishTitleEditing(true)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); finishTitleEditing(true); } else if (event.key === "Escape") { event.preventDefault(); finishTitleEditing(false); } }} aria-label="走查名称" /> : <strong title={auditName}>{auditName}</strong>}<button type="button" aria-label="编辑走查名称" onClick={beginTitleEditing}><AppIcon icon={PencilSimple} size={16} /></button></div>

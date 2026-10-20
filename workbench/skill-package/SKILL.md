@@ -1,11 +1,11 @@
 ---
 name: ui-quality-workbench
-description: Launch Design Toolbox (设计工具箱), a local platform for UI screenshot inspection and a collection of useful tools and Skills. Use when the user wants to open the toolbox, browse shared tools and copy installation prompts, or compare design and implementation screenshots followed by human review and export of heuristic difference candidates. Screenshot sources include local images, a Figma frame imported with a personal access token, or an isolated Chromium viewport capture. This version is not a UX, accessibility, DOM, or computed-style audit.
+description: Launch Design Toolbox (设计工具箱), a local platform for UI screenshot inspection, shared tools and Skills, and video downloading. Use when the user wants to open the toolbox, parse a video link and select quality and download within its page, browse shared tools and copy installation prompts, or compare design and implementation screenshots followed by human review and export of heuristic difference candidates. Screenshot sources include local images, a Figma frame imported with a personal access token, or an isolated Chromium viewport capture. This version is not a UX, accessibility, DOM, or computed-style audit.
 ---
 
 # 设计工具箱 · Design Toolbox
 
-Use this skill to open **设计工具箱**. The platform includes **UI 走查** and **工具分享**. Its installation identifier remains `ui-quality-workbench` so existing installs and launch commands keep working.
+Use this skill to open **设计工具箱**. The platform includes **UI 走查**, **工具分享**, and **视频下载**. Its installation identifier remains `ui-quality-workbench` so existing installs and launch commands keep working.
 
 The UI 走查 module compares a design image with an implementation screenshot in a browser Worker, groups visible differences into review candidates, and supports human confirmation and export.
 
@@ -32,6 +32,16 @@ The analyzer is heuristic. Call its output **candidates** or **possible mismatch
 5. Keep the process running while the workbench is in use. Stop it with `Ctrl+C` when the user asks to close it or the session no longer needs it.
 
 If launch fails with `EPERM` or an explicit loopback-socket restriction, request local execution permission and retry the same command. Do not change the bind address, substitute a hosted copy, or upload local images elsewhere.
+
+## Open the video downloader
+
+Select **视频下载** to parse a video URL, select quality, download, monitor progress, and cancel tasks inside the toolbox page. The local service runs yt-dlp, Deno, and FFmpeg directly; do not launch a separate desktop app for the normal flow. The toolbox also opens the save folder and reports dependency/directory availability. Only report completion when the output file has been verified. Switching modules preserves running tasks; stopping the local service cancels active jobs.
+
+MP4 is only a container. The service checks video/audio codecs before completion and converts incompatible streams to H.264 8-bit 4:2:0 and AAC-LC. Already compatible streams are copied without another lossy encode. Conversion preserves the original under `.originals` in the save directory and verifies codecs, audio presence, and duration before replacing the visible output.
+
+The current bridge supports macOS. On normal startup it creates `~/Downloads/设计工具箱` only when no save location is configured, discovers dependencies in PATH, standard Homebrew locations and the yt-dlp GUI directory, and runs version checks. Missing dependencies are shown in the page with installation guidance; checking does not install software. Use **重新检测** after installing dependencies. The local preferences file is `~/Library/Application Support/DesignToolbox/video-downloader.json`, with `downloadsDirectory`, executable paths in `tools` (`yt-dlp`, `Deno`, `FFmpeg`, `FFprobe`), and an optional `appPath`. Never publish this machine-specific file.
+
+Use **更改保存位置** to choose a writable directory through the in-page folder browser. Cancelling preserves the previous preference; changes affect only new jobs. Each completed download has **打开文件夹** to reveal its actual output, even after the default is changed. Preserve configured save locations across startup; an external disk must be connected and writable, with no silent fallback. Current support is for individual public videos, with up to 3 active jobs and the latest 30 jobs retained for this server session. Live streams, playlists, and login-credential configuration are not implemented. Video availability depends on the upstream extractor, network, and access conditions.
 
 ## Browse shared tools
 
@@ -70,4 +80,4 @@ When a user points out a missed finding or a false positive, read [references/au
 - Web capture is an isolated current-viewport screenshot. It is not full-page stitching, interactive browsing, login-state inheritance, DOM inspection, or computed-style extraction.
 - Local browser processing is not a security certification. Figma import necessarily sends the PAT to Figma and downloads the selected frame; webpage capture necessarily requests the supplied URL.
 - The comparability gate has no OCR, DOM, or product semantics. It can stop widely mismatched inputs and warn about localized changes, but it cannot prove that two screens represent the same route/state or identify the authoritative side.
-- UI 走查 and 工具分享 are implemented. Do not claim that the planned interaction-experience, accessibility, or collaboration modules already run.
+- UI 走查, 工具分享, and in-page 视频下载 are implemented. Do not claim that the planned interaction-experience, accessibility, or collaboration modules already run.
