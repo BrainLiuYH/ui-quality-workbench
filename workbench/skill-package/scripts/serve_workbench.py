@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import html
+import importlib.util
 import http.client
 import http.server
 import json
@@ -22,6 +24,7 @@ import sys
 import tempfile
 import threading
 import time
+import webbrowser
 from datetime import datetime, timezone
 from email.utils import format_datetime
 from pathlib import Path
@@ -55,10 +58,31 @@ CAPTURE_LIMITS = {
     "maxPixels": 25_000_000,
     "timeoutSeconds": 50,
 }
-YDL_CONFIG_PATH = Path.home() / "Library/Application Support/DesignToolbox/video-downloader.json"
+def video_config_path() -> Path:
+    legacy = Path.home() / "Library/Application Support/DesignToolbox/video-downloader.json"
+    if sys.platform == "darwin" or legacy.is_file():
+        return legacy
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData/Local")
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return base / "DesignToolbox/video-downloader.json"
+
+
+YDL_CONFIG_PATH = video_config_path()
 VIDEO_CONFIG_LOCK = threading.RLock()
 VIDEO_DEPENDENCY_CHECKS: Dict[str, dict] = {}
 VIDEO_SETUP_ERROR = ""
+VIDEO_INSTALL_LOCK = threading.Lock()
+VIDEO_INSTALL_STATE = {"status": "idle", "message": "", "percent": None, "errors": []}
+
+
+def dependency_installer():
+    spec = importlib.util.spec_from_file_location(
+        "video_dependency_installer", Path(__file__).with_name("install_video_dependencies.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class RequestError(Exception):
@@ -410,6 +434,14 @@ def _stop_browser_process(process: subprocess.Popen) -> None:
             except OSError:
                 pass
     elif process.poll() is None:
+        if sys.platform == "win32":
+            # yt-dlp can own an FFmpeg child: stopping just the parent leaves it writing.
+            try:
+                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=10, check=False)
+            except (OSError, subprocess.SubprocessError):
+                pass
         try:
             process.terminate()
             process.wait(timeout=1)
@@ -588,10 +620,12 @@ def _save_video_config(config: dict) -> None:
 
 def _video_tool_candidates(name: str, configured: object, resolved: dict) -> list[str]:
     binary = {"yt-dlp": "yt-dlp", "Deno": "deno", "FFmpeg": "ffmpeg", "FFprobe": "ffprobe"}[name]
+    if sys.platform == "win32":
+        binary += ".exe"
     managed = Path.home() / "Library/Application Support/com.imsyy.yt-dlp-gui"
     candidates = [configured]
     if name == "FFprobe" and resolved.get("FFmpeg"):
-        candidates.append(str(Path(resolved["FFmpeg"]).with_name("ffprobe")))
+        candidates.append(str(Path(resolved["FFmpeg"]).with_name(binary)))
     candidates.extend([
         shutil.which(binary),
         str(managed / ("ffmpeg/" + binary if name in {"FFmpeg", "FFprobe"} else binary)),
@@ -599,7 +633,27 @@ def _video_tool_candidates(name: str, configured: object, resolved: dict) -> lis
         "/usr/local/bin/" + binary,
         str(Path.home() / ".local/bin" / binary),
         str(Path.home() / ".deno/bin" / binary),
+        str(YDL_CONFIG_PATH.parent / "bin" / binary),
     ])
+    if sys.platform == "win32":
+        local = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData/Local")
+        roaming = Path(os.environ.get("APPDATA") or Path.home() / "AppData/Roaming")
+        candidates.extend([
+            str(Path(sys.executable).parent / "Scripts" / binary),
+            str(local / "Microsoft/WinGet/Links" / binary),
+            str(Path.home() / "scoop/shims" / binary),
+            str(roaming / "com.imsyy.yt-dlp-gui" / binary),
+            str(roaming / "com.imsyy.yt-dlp-gui/ffmpeg" / binary),
+        ])
+        # A running Codex may still have the old PATH after a package installation.
+        for parent, pattern in (
+            (local / "Microsoft/WinGet/Packages", "*/*/bin/" + binary),
+            (local / "Microsoft/WinGet/Packages", "*/" + binary),
+            (local / "Programs/Python", "Python*/Scripts/" + binary),
+            (roaming / "Python", "Python*/Scripts/" + binary),
+        ):
+            if parent.is_dir():
+                candidates.extend(str(path) for path in sorted(parent.glob(pattern), reverse=True))
     return list(dict.fromkeys(path for path in candidates if isinstance(path, str) and Path(path).is_absolute()))
 
 
@@ -647,6 +701,55 @@ def initialize_video_downloader(payload: object = None) -> dict:
     return {"videoDownloader": video_downloader_status(), "message": "已重新检查保存位置和下载依赖。"}
 
 
+def start_video_dependency_install(payload: object = None) -> dict:
+    if payload not in (None, {}):
+        raise RequestError(400, "自动安装不接受安装地址或命令参数。")
+    with VIDEO_INSTALL_LOCK:
+        if VIDEO_INSTALL_STATE["status"] == "installing":
+            return {"message": "依赖正在安装，请稍候。"}
+        missing = [item["name"] for item in video_downloader_status()["dependencies"] if not item["available"]]
+        if not missing:
+            return {"message": "所有下载依赖均已就绪。"}
+        if VIDEO_SETUP_ERROR:
+            raise RequestError(503, VIDEO_SETUP_ERROR)
+        VIDEO_INSTALL_STATE.update(status="installing", message="正在准备下载依赖", percent=None, errors=[])
+    threading.Thread(target=_install_video_dependencies, args=(missing,), daemon=True).start()
+    return {"videoDownloader": video_downloader_status(), "message": "已开始安装缺少的下载依赖。"}
+
+
+def _install_video_dependencies(missing: list[str]) -> None:
+    def progress(message, percent):
+        with VIDEO_INSTALL_LOCK:
+            VIDEO_INSTALL_STATE.update(message=message, percent=percent)
+
+    def installed(name, path):
+        # Reload settings after downloading so an in-page directory change is kept.
+        with VIDEO_CONFIG_LOCK:
+            config = _read_video_config_for_update()
+            tools = dict(config.get("tools") or {})
+            tools[name] = path
+            config["tools"] = tools
+            _save_video_config(config)
+            VIDEO_DEPENDENCY_CHECKS[name] = {"path": path, "available": True}
+
+    errors = []
+    try:
+        errors = dependency_installer().install_missing(
+            missing, YDL_CONFIG_PATH.parent / "bin", progress, installed)
+        progress("正在检查安装结果", None)
+        initialize_video_downloader()
+        unavailable = [item["name"] for item in video_downloader_status()["dependencies"] if not item["available"]]
+        if unavailable and not errors:
+            errors = ["仍未检测到可用程序：" + "、".join(unavailable)]
+    except Exception as exc:
+        errors.append(str(exc))
+    with VIDEO_INSTALL_LOCK:
+        VIDEO_INSTALL_STATE.update(
+            status="error" if errors else "complete", percent=None, errors=errors,
+            message="部分依赖未安装成功，请检查网络后重试。" if errors else "下载依赖已安装完成。")
+    emit({"event": "video-dependencies", "status": "error" if errors else "ready", "errors": errors})
+
+
 def video_downloader_status() -> Dict[str, object]:
     config = video_downloader_config()
     app_path = config.get("appPath")
@@ -686,6 +789,8 @@ def video_downloader_status() -> Dict[str, object]:
         "directoryAvailable": directory_available,
         "setupError": VIDEO_SETUP_ERROR,
         "canChooseDirectory": True,
+        "platform": sys.platform,
+        "installation": dict(VIDEO_INSTALL_STATE),
     }
 
 
@@ -700,6 +805,8 @@ def validate_video_launch_payload(payload: object) -> str:
     url = raw_url.strip()
     if not url:
         return ""
+    if re.search(r"\s", url) or len(re.findall(r"https?://", url, re.IGNORECASE)) > 1:
+        raise RequestError(400, "每次只能解析一个视频，请只粘贴一条完整链接。")
     try:
         parsed = urlsplit(url)
         port = parsed.port
@@ -748,14 +855,23 @@ def open_video_download_folder(payload: object) -> Dict[str, object]:
     if payload != {}:
         raise RequestError(400, "此操作不接受路径参数。")
     directory = video_downloader_status()["downloadsDirectory"]
-    if not directory or not Path(directory).is_dir() or sys.platform != "darwin":
+    if not directory or not Path(directory).is_dir():
         raise RequestError(503, "默认下载目录尚未配置。")
+    reveal_video_directory(Path(directory))
+    return {"message": "已打开默认下载文件夹。"}
+
+
+def reveal_video_directory(directory: Path, file_path: Optional[Path] = None) -> None:
     try:
-        subprocess.run(["/usr/bin/open", directory], check=True, timeout=10,
-                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if sys.platform == "win32":
+            os.startfile(str(directory))
+        else:
+            args = (["/usr/bin/open", "-R", str(file_path)] if file_path else ["/usr/bin/open", str(directory)]) \
+                if sys.platform == "darwin" else ["xdg-open", str(directory)]
+            subprocess.run(args, check=True, timeout=10, stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError) as exc:
         raise RequestError(502, "无法打开下载文件夹。") from exc
-    return {"message": "已打开默认下载文件夹。"}
 
 
 def _video_directory(payload: object, *, allow_empty: bool = False) -> Path:
@@ -787,11 +903,20 @@ def list_video_directories(payload: object) -> dict:
                      {"name": "下载", "directory": str(Path.home() / "Downloads")}]
         if sys.platform == "darwin":
             shortcuts.append({"name": "磁盘", "directory": "/Volumes"})
+        elif sys.platform == "win32":
+            shortcuts.extend(windows_drive_shortcuts())
         return {"directory": str(directory), "parent": str(directory.parent),
                 "folders": folders[:500], "truncated": len(folders) > 500,
                 "shortcuts": [item for item in shortcuts if Path(item["directory"]).is_dir()]}
     except OSError as exc:
         raise RequestError(403, "无法浏览此文件夹，请检查访问权限。") from exc
+
+
+def windows_drive_shortcuts() -> list[dict]:
+    import ctypes
+    mask = ctypes.windll.kernel32.GetLogicalDrives()
+    return [{"name": "{}:".format(chr(65 + index)), "directory": "{}:\\".format(chr(65 + index))}
+            for index in range(26) if mask & (1 << index)]
 
 
 def choose_video_download_folder(payload: object) -> dict:
@@ -896,14 +1021,8 @@ class VideoJobManager:
             directory = Path(job["directory"])
         if not is_within_root(path.resolve(), directory.resolve()) or not path.is_file():
             raise RequestError(404, "下载文件已移动、删除，或保存磁盘未连接。")
-        if sys.platform != "darwin":
-            raise RequestError(503, "当前打开文件夹功能仅支持 macOS。")
-        try:
-            subprocess.run(["/usr/bin/open", "-R", str(path)], check=True, timeout=10,
-                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise RequestError(502, "无法打开此任务的保存文件夹。") from exc
-        return {"message": "已在文件夹中显示下载的视频。"}
+        reveal_video_directory(directory, path)
+        return {"message": "已打开此视频的保存文件夹。"}
 
     def _new(self, kind: str, url: str, **fields: object) -> dict:
         with self._lock:
@@ -931,7 +1050,7 @@ class VideoJobManager:
         with self._lock:
             if self._closed or job["status"] == "cancelled":
                 raise RequestError(409, "任务已取消。")
-            process = subprocess.Popen(args, stdin=subprocess.DEVNULL, start_new_session=True, **kwargs)
+            process = subprocess.Popen(args, stdin=subprocess.DEVNULL, start_new_session=os.name == "posix", **kwargs)
             job["_process"] = process
             if not self._processes.register(process):
                 _stop_browser_process(process)
@@ -1205,7 +1324,7 @@ class VideoJobManager:
 
 POST_ENDPOINTS = {"/api/figma/import", "/api/capture", "/api/apps/ydl/launch", "/api/apps/ydl/folder",
                   "/api/video/parse", "/api/video/download", "/api/video/cancel",
-                  "/api/video/check", "/api/video/directory", "/api/video/folder", "/api/video/directories"}
+                  "/api/video/check", "/api/video/install", "/api/video/directory", "/api/video/folder", "/api/video/directories"}
 
 
 class WorkbenchServer(http.server.ThreadingHTTPServer):
@@ -1295,6 +1414,8 @@ class WorkbenchHandler(http.server.BaseHTTPRequestHandler):
                 self._send_json(200, self.server.video_jobs.cancel(payload))
             elif request_path == "/api/video/check":
                 self._send_json(200, initialize_video_downloader(payload))
+            elif request_path == "/api/video/install":
+                self._send_json(202, start_video_dependency_install(payload))
             elif request_path == "/api/video/directories":
                 self._send_json(200, list_video_directories(payload))
             elif request_path == "/api/video/directory":
@@ -1343,6 +1464,8 @@ class WorkbenchHandler(http.server.BaseHTTPRequestHandler):
                 self._json_error(401, "Invalid or missing workbench token", include_body=include_body)
                 return
             payload = self.server.video_jobs.snapshot() if request_path == "/api/video/jobs" else capabilities_payload()
+            if request_path == "/api/video/jobs":
+                payload["videoDownloader"] = video_downloader_status()
             self._send_json(200, payload, include_body=include_body)
             return
         if request_path == "/health":
@@ -1357,15 +1480,33 @@ class WorkbenchHandler(http.server.BaseHTTPRequestHandler):
         try:
             stat = resolved.stat()
             content_type = self._content_type(resolved)
+            document = None
+            if resolved == self.root / "index.html":
+                if (self.headers.get("Origin") and not self._origin_allowed()) or (
+                    self.headers.get("Sec-Fetch-Site") == "cross-site"
+                    and self.headers.get("Sec-Fetch-Mode") != "navigate"
+                ):
+                    self._json_error(403, "Cross-origin document access denied", include_body=include_body)
+                    return
+                # The loopback server supplies its own session, including for a fresh tab
+                # opened without the URL fragment. Static builds never contain a token.
+                source = resolved.read_text(encoding="utf-8")
+                meta = '<meta name="workbench-bridge-token" content="{}">'.format(
+                    html.escape(self.server.access_token, quote=True))
+                source = source.replace("<head>", "<head>" + meta, 1) if "<head>" in source else meta + source
+                document = source.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(stat.st_size))
+            self.send_header("Content-Length", str(len(document) if document is not None else stat.st_size))
             modified = datetime.fromtimestamp(stat.st_mtime, timezone.utc)
             self.send_header("Last-Modified", format_datetime(modified, usegmt=True))
             self.end_headers()
             if include_body:
-                with resolved.open("rb") as handle:
-                    self._copy(handle)
+                if document is not None:
+                    self.wfile.write(document)
+                else:
+                    with resolved.open("rb") as handle:
+                        self._copy(handle)
         except OSError as exc:
             self.send_error(500, "Cannot read bundled asset: {}".format(exc))
 
@@ -1529,6 +1670,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--check", action="store_true", help="Verify the bundle and local bridge, then exit.")
     parser.add_argument("--port", type=int, default=0, help="Loopback port; 0 chooses an available port.")
     parser.add_argument("--verbose", action="store_true", help="Write HTTP access logs to stderr.")
+    parser.add_argument("--open", action="store_true", help="Open the authenticated local page in the default browser.")
+    parser.add_argument("--no-install", action="store_true", help="Check dependencies without automatically installing missing ones.")
+    parser.add_argument("--install-only", action="store_true", help="Install missing video dependencies and exit after verification.")
     return parser.parse_args()
 
 
@@ -1652,11 +1796,22 @@ def main() -> int:
         return 1
 
     server.verbose = args.verbose
+    emit({"event": "starting", "message": "正在检查本机下载依赖，首次启动可能需要约一分钟。"})
     try:
         initialize_video_downloader()
+        if not args.no_install:
+            start_video_dependency_install()
     except RequestError as exc:
         # A video setup failure must not prevent the other toolbox modules from starting.
         emit({"event": "video-setup", "status": "error", "error": exc.message}, stream=sys.stderr)
+    if args.install_only:
+        while VIDEO_INSTALL_STATE["status"] == "installing":
+            time.sleep(0.2)
+        server.server_close()
+        available = all(item["available"] for item in video_downloader_status()["dependencies"])
+        emit({"event": "installation", "status": "ok" if available else "error",
+              "videoDownloader": video_downloader_status()})
+        return 0 if available else 1
     port = server.server_address[1]
     url = "http://{}:{}/#token={}".format(HOST, port, quote(server.access_token, safe=""))
 
@@ -1667,6 +1822,8 @@ def main() -> int:
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
     emit({"event": "ready", "protocol": 2, "host": HOST, "port": port, "url": url, "pid": os.getpid(), "root": str(WEB_ROOT), "mode": "local-source-bridge"})
+    if args.open:
+        threading.Thread(target=webbrowser.open, args=(url,), daemon=True).start()
     try:
         server.serve_forever(poll_interval=0.25)
     finally:

@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "test": "pnpm run test:unit && pnpm run test:bridge",
     "test:unit": "node --test tests/*.test.mjs",
-    "test:bridge": "python3 tests/source-bridge.test.py",
+    "test:bridge": "python3 tests/source-bridge.test.py && python3 tests/video-bootstrap.test.py",
     "test:sites": "node --test tests/sites-worker.test.mjs"
   },
   "dependencies": {

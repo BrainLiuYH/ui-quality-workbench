@@ -6,19 +6,25 @@ function consumeFragmentToken() {
   const token = fragment.get("token") || "";
   if (!token) return "";
 
-  window.sessionStorage.setItem(TOKEN_KEY, token);
+  try { window.sessionStorage.setItem(TOKEN_KEY, token); } catch { /* Private browser storage may be unavailable. */ }
   fragment.delete("token");
   const remaining = fragment.toString();
   window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${remaining ? `#${remaining}` : ""}`);
   return token;
 }
 
-let bridgeToken = consumeFragmentToken();
+const fragmentToken = consumeFragmentToken();
+// Only the loopback Python service adds this meta tag. It also replaces stale
+// tokens after a restart, even when a user opens a saved URL without a fragment.
+let bridgeToken = (typeof document !== "undefined" && document.querySelector('meta[name="workbench-bridge-token"]')?.content) || fragmentToken;
+if (bridgeToken && typeof window !== "undefined") {
+  try { window.sessionStorage.setItem(TOKEN_KEY, bridgeToken); } catch { /* Keep the in-memory session. */ }
+}
 
 export function getBridgeToken() {
   if (bridgeToken) return bridgeToken;
   if (typeof window === "undefined") return "";
-  bridgeToken = window.sessionStorage.getItem(TOKEN_KEY) || "";
+  try { bridgeToken = window.sessionStorage.getItem(TOKEN_KEY) || ""; } catch { return ""; }
   return bridgeToken;
 }
 
@@ -35,12 +41,20 @@ async function readError(response) {
 async function bridgeFetch(path, options = {}) {
   const token = getBridgeToken();
   if (!token) {
-    throw new Error("当前页面未通过 Skill 本地服务启动，仅支持本地图片上传。请重新运行 Skill 启动脚本。");
+    throw new Error("尚未连接本地服务。请从项目或 Skill 目录运行 start.py，并打开启动器返回的页面；Windows 可双击 start-windows.cmd。");
   }
 
   const headers = new Headers(options.headers || {});
   headers.set("X-Workbench-Token", token);
-  const response = await fetch(path, { ...options, headers });
+  let response;
+  try { response = await fetch(path, { ...options, headers }); } catch (error) {
+    if (error.name === "AbortError") throw error;
+    throw new Error("本地服务连接已断开。请重新启动 start.py，并打开它返回的页面。");
+  }
+  if (response.status === 401) throw new Error("本地连接已过期。请刷新页面；若仍未连接，请打开启动器返回的新地址。");
+  if (!response.headers.get("content-type")?.includes("application/json") && !response.headers.get("content-type")?.startsWith("image/")) {
+    throw new Error("当前地址没有运行本地服务。请运行 start.py；开发预览或静态网页无法下载视频。");
+  }
   if (!response.ok) throw new Error(await readError(response));
   return response;
 }
@@ -119,6 +133,10 @@ export function listVideoDirectories(directory = "") {
 
 export function checkVideoEnvironment() {
   return requestDesktopAction("/api/video/check");
+}
+
+export function installVideoDependencies() {
+  return requestDesktopAction("/api/video/install");
 }
 
 export function openVideoJobFolder(id) {

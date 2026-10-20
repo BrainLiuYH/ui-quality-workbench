@@ -1,0 +1,37 @@
+name: Video downloader startup
+on:
+  push:
+    paths:
+      - 'start*'
+      - 'workbench/scripts/*video*'
+      - 'workbench/scripts/serve_workbench.py'
+      - 'workbench/skill-package/**'
+      - 'workbench/tests/*bridge*'
+      - 'workbench/tests/*bootstrap*'
+      - 'workbench/tests/install-dependencies-smoke.py'
+      - '.github/workflows/video-bootstrap.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  startup:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - run: python workbench/tests/source-bridge.test.py
+      - run: python workbench/tests/video-bootstrap.test.py
+      - run: node --test workbench/tests/local-bridge.test.mjs
+      - run: python start.py --check
+      - run: python workbench/skill-package/start.py --check
+      - name: Install real engines in an empty temporary directory
+        run: python workbench/tests/install-dependencies-smoke.py

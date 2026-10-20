@@ -925,7 +925,9 @@ textarea:hover { border-color: #b9c8da; }
 .video-download-folder button { flex-shrink: 0; }
 .video-folder-actions, .video-task-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; flex-wrap: wrap; }
 .video-dependency-help { margin-top: 16px; line-height: 1.8; }
-.video-dependency-help code { display: block; padding: 10px 12px; background: var(--canvas); border: 1px solid var(--line); border-radius: 6px; overflow-wrap: anywhere; }
+.video-dependency-help > code, .video-dependency-help > details code { display: block; padding: 10px 12px; background: var(--canvas); border: 1px solid var(--line); border-radius: 6px; overflow-wrap: anywhere; white-space: pre-wrap; }
+.video-dependency-help progress { width: 100%; accent-color: var(--brand); }
+.video-dependency-help .is-error { white-space: pre-wrap; overflow-wrap: anywhere; }
 .video-dependency-help a { color: var(--brand); }
 .video-folder-browser { gap: 12px; }
 .video-folder-browser p { margin: 0; color: var(--ink-3); font-size: 12px; line-height: 1.7; }

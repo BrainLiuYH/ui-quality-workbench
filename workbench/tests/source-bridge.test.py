@@ -9,6 +9,7 @@ import json
 import base64
 import http.client
 import stat
+import os
 import tempfile
 import threading
 import time
@@ -274,6 +275,20 @@ class HandlerTests(unittest.TestCase):
             "Content-Type": "application/json",
         }
 
+    def test_fresh_document_receives_session_token_but_cross_origin_fetch_does_not(self):
+        status, headers, body = self.request("GET", "/")
+        self.assertEqual(status, 200)
+        self.assertIn(self.token.encode(), body)
+        self.assertEqual(int(headers["Content-Length"]), len(body))
+        self.assertIn("no-store", headers["Cache-Control"])
+        status, head, empty = self.request("HEAD", "/")
+        self.assertEqual(int(head["Content-Length"]), len(body))
+        self.assertEqual(empty, b"")
+        for headers in ({"Origin": "https://evil.example"}, {"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "cors"}):
+            status, _, body = self.request("GET", "/", headers=headers)
+            self.assertEqual(status, 403)
+            self.assertNotIn(self.token.encode(), body)
+
     def test_capabilities_requires_token(self) -> None:
         status, _, _ = self.request("GET", "/api/capabilities")
         self.assertEqual(status, 401)
@@ -361,7 +376,7 @@ class HandlerTests(unittest.TestCase):
     def test_desktop_launch_requires_same_origin_and_token(self) -> None:
         for endpoint in ("/api/apps/ydl/launch", "/api/apps/ydl/folder",
                          "/api/video/parse", "/api/video/download", "/api/video/cancel",
-                         "/api/video/check", "/api/video/directory", "/api/video/folder", "/api/video/directories"):
+                         "/api/video/check", "/api/video/install", "/api/video/directory", "/api/video/folder", "/api/video/directories"):
             with self.subTest(endpoint=endpoint):
                 headers = self.api_headers()
                 headers["Origin"] = "https://untrusted.example"
@@ -389,7 +404,8 @@ class HandlerTests(unittest.TestCase):
         self.assertEqual(self.request("GET", "/api/video/jobs")[0], 401)
         status, _, body = self.request("GET", "/api/video/jobs", headers={bridge.TOKEN_HEADER: self.token})
         self.assertEqual(status, 200)
-        self.assertEqual(json.loads(body), {"jobs": []})
+        self.assertEqual(json.loads(body)["jobs"], [])
+        self.assertIn("installation", json.loads(body)["videoDownloader"])
         status, _, _ = self.request("POST", "/api/video/parse", body="{}", headers=self.api_headers())
         self.assertEqual(status, 400)
 
@@ -428,6 +444,7 @@ class VideoDownloaderTests(unittest.TestCase):
             with self.subTest(payload=payload), self.assertRaises(bridge.RequestError):
                 bridge.validate_video_launch_payload(payload)
 
+    @unittest.skipIf(os.name == "nt", "Optional macOS desktop GUI")
     def test_launch_passes_url_as_one_argument_without_shell(self) -> None:
         url = "https://www.youtube.com/watch?v=test&list=a$(touch%20/tmp/nope)"
         config = {"appPath": "/Applications/YDL GUI.app"}
@@ -507,6 +524,7 @@ class VideoSettingsTests(unittest.TestCase):
         self.assertFalse(Path(offline).exists())
         self.assertEqual(json.loads(self.config.read_text())["appPath"], "/Applications/Custom.app")
 
+    @unittest.skipIf(os.name == "nt", "POSIX shell fixture")
     def test_detection_executes_version_check_and_persists_working_programs(self):
         executable = self.root / "program with spaces"
         executable.write_text("#!/bin/sh\nprintf 'test-program 1.0\\n'\n")
@@ -521,6 +539,7 @@ class VideoSettingsTests(unittest.TestCase):
         self.assertFalse(result["ready"])
         self.assertTrue(all(not item["available"] for item in result["dependencies"]))
 
+    @unittest.skipIf(os.name == "nt", "macOS path discovery fixture")
     def test_candidates_include_path_gui_homebrew_and_adjacent_ffprobe(self):
         with mock.patch.object(bridge.shutil, "which", return_value="/test/path/ffprobe"):
             paths = bridge._video_tool_candidates("FFprobe", "/chosen/ffprobe", {"FFmpeg": "/paired/ffmpeg"})

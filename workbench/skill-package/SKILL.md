@@ -14,22 +14,11 @@ The analyzer is heuristic. Call its output **candidates** or **possible mismatch
 ## Start the workbench
 
 1. Resolve this skill's directory from the selected `SKILL.md`. Do not assume the repository root or hardcode an install location.
-2. Verify the bundle and local source bridge before the first launch in a session:
-
-   ```bash
-   python3 <skill-directory>/scripts/serve_workbench.py --check
-   ```
-
-3. Start the server as a long-running process:
-
-   ```bash
-   python3 <skill-directory>/scripts/serve_workbench.py
-   ```
-
-   The launcher prints one JSON line with `event: "ready"`, `protocol: 2`, a dynamic loopback URL, and process metadata. Use the returned URL exactly; its fragment carries the per-launch token used by the browser app.
-
-4. If browser control is available and the user wants the interface opened, navigate to that URL. Otherwise, give the URL to the user.
-5. Keep the process running while the workbench is in use. Stop it with `Ctrl+C` when the user asks to close it or the session no longer needs it.
+2. Check Python 3.9+ and the bundle using `python3 <skill-directory>/start.py --check` (macOS), or `py -3 <skill-directory>/start.py --check` (Windows).
+3. Start the same `start.py` as a long-running local process. Add `--no-open` when opening its URL through a browser tool; otherwise it opens the browser automatically. Windows users can double-click `start-windows.cmd`.
+4. Wait for the JSON `ready` event, then open its loopback URL. Initial dependency checks can take about a minute. The server also supplies a per-launch token to its own HTML so a fresh tab or refreshed saved URL can connect. Never remove the Host, Origin or token checks.
+5. Missing video engines install automatically in the background. Keep the process running and check the video's dependency status until all four programs are available. Report a download/network/architecture failure explicitly; use the in-page retry action after resolving it. A frontend preview alone is not a completed installation.
+6. To install before opening the page, run `start.py --install-only` and check its exit code. `--no-install` disables automatic installation; `--check` only verifies the local bundle and HTTP guards. Stop the service with `Ctrl+C` only when no longer needed.
 
 If launch fails with `EPERM` or an explicit loopback-socket restriction, request local execution permission and retry the same command. Do not change the bind address, substitute a hosted copy, or upload local images elsewhere.
 
@@ -39,7 +28,9 @@ Select **视频下载** to parse a video URL, select quality, download, monitor 
 
 MP4 is only a container. The service checks video/audio codecs before completion and converts incompatible streams to H.264 8-bit 4:2:0 and AAC-LC. Already compatible streams are copied without another lossy encode. Conversion preserves the original under `.originals` in the save directory and verifies codecs, audio presence, and duration before replacing the visible output.
 
-The current bridge supports macOS. On normal startup it creates `~/Downloads/设计工具箱` only when no save location is configured, discovers dependencies in PATH, standard Homebrew locations and the yt-dlp GUI directory, and runs version checks. Missing dependencies are shown in the page with installation guidance; checking does not install software. Use **重新检测** after installing dependencies. The local preferences file is `~/Library/Application Support/DesignToolbox/video-downloader.json`, with `downloadsDirectory`, executable paths in `tools` (`yt-dlp`, `Deno`, `FFmpeg`, `FFprobe`), and an optional `appPath`. Never publish this machine-specific file.
+The local video bridge supports macOS and Windows. On normal startup it creates `~/Downloads/设计工具箱` only when no save location is configured, discovers existing dependencies, and runs version checks. Missing dependencies are downloaded to a private `bin` directory, SHA-256 checked, executed for validation, and recorded only after success. macOS Intel/Apple Silicon and Windows x64 support automatic installation. No Homebrew, administrator privileges or system PATH changes are required. Download failures remain visible and can be retried in the page. Do not claim automatic installation works offline or on unsupported architectures.
+
+Preferences live at `~/Library/Application Support/DesignToolbox/video-downloader.json` on macOS or `%LOCALAPPDATA%/DesignToolbox/video-downloader.json` on Windows. Preserve an existing legacy configuration. Settings contain `downloadsDirectory`, executable paths in `tools` (`yt-dlp`, `Deno`, `FFmpeg`, `FFprobe`), and optional `appPath`. Never publish this machine-specific file. Installation reuses healthy dependencies and preserves the save location. The source README documents download publishers and manual alternatives.
 
 Use **更改保存位置** to choose a writable directory through the in-page folder browser. Cancelling preserves the previous preference; changes affect only new jobs. Each completed download has **打开文件夹** to reveal its actual output, even after the default is changed. Preserve configured save locations across startup; an external disk must be connected and writable, with no silent fallback. Current support is for individual public videos, with up to 3 active jobs and the latest 30 jobs retained for this server session. Live streams, playlists, and login-credential configuration are not implemented. Video availability depends on the upstream extractor, network, and access conditions.
 
